@@ -1,0 +1,15 @@
+<table width="400" border="1">
+  <tr>
+	{% for field in heads %}
+	  <th>{{field}}</th>
+	{% endfor %}
+  </tr>
+  {% for row in rows %}
+    <tr>
+    {% for col in row %}
+      <td align="left">{{col}}</td>
+    {% endfor %}
+	</tr>
+  {% endfor %}
+</table>
+
