@@ -1,13 +1,10 @@
 
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-from email.MIMEText import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.Header import Header
-from email.Utils import formatdate
-from email import parser
-import smtplib
 import imaplib
+from pyzmail import *
+from envelopes import Envelope
+import pdb
 
 class EmailUtil:
     def __init__(self, server ="", username="", password=""):
@@ -35,13 +32,11 @@ class EmailUtil:
         return mail.as_string()
 
     def sendEmail(self, toAddrList, subject, content='', files=[]):
-        content = self.letter(subject, content, toAddrList, files)
+        mail = Envelope(toAddrList, self.username, subject, content)
+        for f in files:
+            mail.add_attachment(f)
         try:
-            smtp = smtplib.SMTP_SSL('smtp.'+self.server, smtplib.SMTP_SSL_PORT)
-            smtp.login(self.username, self.password)
-            
-            smtp.sendmail(self.username, toAddrList, content)
-            smtp.close()
+            mail.send('smtp.'+self.server, login=self.username, password=self.password, tls=True)
         except Exception as e:
             print e
 
@@ -52,25 +47,25 @@ class EmailUtil:
             imap.login(self.username, self.password)
             imap.select('INBOX')
             resp, items = imap.search(None, criterion)
-            pdb.set_trace()
             for i in items[0].split():
+                pdb.set_trace()
                 typ, content = imap.fetch(i, '(RFC822)')
-                msg = email.message_from_string(content[0][1])
+                msg = PyzMessage.factory(content[0][1])
+                imap.store(i, '+FLAGS', '\\seen')
                 res = {
-                    'from':msg['From'].split(),
-                    'subject':msg['Subject'],
-                    'content':[],
-                    'files':[]
+                    'from': msg.get_address('from')[1],
+                    'cc': [x[1] for x in msg.get_addresses('cc')],
+                    'subject': msg.get_subject(),
+                    'content':[]
                 }
-                for part in msg.walk():
-                    filename = part.get_filename()
-                    contentType = part.get_content_type()
-                    if filename:
-                        data = part.get_payload(decode=True)
-                        res['files'].append(data)
-                    else:
-                        data = part.get_payload(decode=True)
+                for part in msg.mailparts:
+                    if part.is_body:
+                        data = part.get_payload().decode(part.charset)
                         res['content'].append(data)
+                    else:
+                        filename = part.filename
+                        data = part.get_payload()
+                        res['content'].append({'filename':filename, 'data':data})
                 result.append(res)
         except Exception as e:
             print e
@@ -78,7 +73,6 @@ class EmailUtil:
 
 if __name__ == "__main__":
     mail = EmailUtil('sina.com', 'dataspy@sina.com', 'YDC21415926')
-    #mail.sendEmail('yandechen@mia.com', 'test', 'test')
     result = mail.recvEmail()
     print result
     
