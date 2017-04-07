@@ -2,7 +2,7 @@
 # coding=utf-8
 import sys
 import os
-from AlgoCommonLib.config_util import *
+from config_util import *
 
 def start(name, cmd):
     sh = 'nohup %s > log/%s.out 2>&1 &'%(cmd, name)

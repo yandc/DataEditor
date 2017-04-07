@@ -84,6 +84,8 @@ def uploadImage(imgType, fromLink, path=None):
     mdl = None
     try:
         mdl = LinkMap.select().where(LinkMap.fromLink==fromLink).get()
+        if not mdl.toLink:
+            return -1, 'Fail link.'
         if mdl.srvLink:
             return True*2, mdl.srvLink
         if path == None:
@@ -104,9 +106,12 @@ def uploadImage(imgType, fromLink, path=None):
     
     idx = path.rfind('/')
     name = path[idx+1:]
-    idx = name.rfind('.')
-    if name[idx:][-4:].lower() == 'jpeg':
-        name = name[:idx+1] + 'jpg'
+    if name[-3:].lower() in ('jpg', 'bmp', 'png', 'gif', 'pic'):
+        name = '%s.%s'%(name[:-4], name[-3:])
+    elif name[-4:].lower() in ('jpeg'):
+        name = '%s.%s'%(name[:-5], 'jpg')
+    else:
+        name += '.jpg'
     files = {'Filedata':(name, open(path, 'rb'), 'image/jpeg')}
     
     url = 'http://uploads.miyabaobei.com/app_upload.php'

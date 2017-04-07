@@ -719,21 +719,39 @@ class Image2Server(Editor):
     def loadCheckPoint(self):
         self.checkPoint = 0
 
+    def loadData(self):
+        srcModel = self.srcModel
+        return srcModel.select().where((srcModel.status==INIT_STATUS) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
+    
     def edit(self, model):
         ret = 0
-        pics = json.loads(model.pics)
+        try:
+            pics = json.loads(model.pics)
+        except Exception, e:
+            logging.error(str(e))
+            return 0
         if model.srvPics:
             srvPics = json.loads(model.srvPics)
             if len(pics) == len(srvPics):
                 return ret
             
         srvLinks = []
+        count = {'downbroken':0, 'succ':0, 'upfail':0, 'repeat':0}
         for pic in pics:
             status, msg = uploadImage('article', pic)
-            if status == False:
+            if status == True:
+                count['succ'] += 1
+            elif status == False:
+                count['upfail'] += 1
                 return 0
+            elif status == -1:
+                count['downbroken'] += 1
+                continue
+            else:
+                count['repeat'] += 1
             srvLinks.append(msg)
-            
+
+        logging.info('%s/%s in %s.'%(str(count), len(pics), model.id))
         model.srvPics = json.dumps(srvLinks)
         if len(srvLinks) == len(pics):
             model.status = UPLOADED_STATUS
@@ -749,7 +767,7 @@ class PostImport(Editor):
         
     def loadData(self):
         srcModel = self.srcModel
-        return srcModel.select().where((srcModel.status==UPLOADED_STATUS) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
+        return srcModel.select().where(((srcModel.status==UPLOADED_STATUS) | (srcModel.status==BROKEN_STATUS)) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
 
     def edit(self, model):
         info = {
@@ -757,7 +775,7 @@ class PostImport(Editor):
             'action':'importSubjectMaterial',
             'params':{
                 'import_data':{
-                    'id':model.id,
+                    'id':str(model.id),
                     'title':model.title,
                     'text':model.text,
                     'srvPics':model.srvPics,
@@ -779,7 +797,6 @@ class PostImport(Editor):
                 model.save()
                 return 1
         except Exception, e:
-            pdb.set_trace()
             logging.error('Import error %s: %s'%(model.id, str(e)))
             model.status = BROKEN_STATUS
             model.save()
@@ -824,3 +841,66 @@ class AvatarImport(Editor):
             logging.error(str(e))
         return 0
         
+class PicsFilter(Editor):
+    srcModel = Article
+    def loadCheckPoint(self):
+        self.checkPoint = 0
+        
+    def loadData(self):
+        srcModel = self.srcModel
+        return srcModel.select().where((srcModel.status==INIT_STATUS) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
+
+    def edit(self, model):
+        try:
+            if model.absentPics:
+                pics = json.loads(model.absentPics)
+            else:
+                pics = json.loads(model.pics)
+        except Exception, e:
+            logging.error(str(e))
+            return 0
+
+        result = []
+        for pic in pics:
+            if pic.find('http') != 0:
+                continue
+            try:
+                mdl = LinkMap.select().where(LinkMap.fromLink==pic).get()
+                continue
+            except:
+                result.append(pic)
+
+        if len(result) != len(pics):
+            model.absentPics = json.dumps(result)
+            model.save()
+            return 1
+        return 0
+
+class MapRepair(Editor):
+    srcModel = Article
+    def loadCheckPoint(self):
+        self.checkPoint = 0
+        
+    def loadData(self):
+        srcModel = self.srcModel
+        return srcModel.select().where(srcModel.id>self.checkPoint).order_by(srcModel.id).limit(self.batchSize)
+
+    def edit(self, model):
+        try:
+            pics = json.loads(model.pics)
+        except Exception, e:
+            logging.error(str(e))
+            return 0
+
+        result = []
+        for pic in pics:
+            if pic.find('http') != 0:
+                continue
+            try:
+                mdl = LinkMap.select().where(LinkMap.fromLink==pic).get()
+                mdl.source = model.source
+                mdl.srcId = model.id
+                mdl.save()
+            except:
+                pass
+        return 1
