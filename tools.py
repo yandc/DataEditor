@@ -85,14 +85,14 @@ def uploadImage(imgType, fromLink, path=None):
     try:
         mdl = LinkMap.select().where(LinkMap.fromLink==fromLink).get()
         if not mdl.toLink:
-            return -1, 'Fail link.'
+            return 'broken', 'Fail link.'
         if mdl.srvLink:
-            return True*2, mdl.srvLink
+            return 'succ', mdl.srvLink
         if path == None:
             path = mdl.toLink
     except:
         if path == None:
-            return False, 'Empth Image Path.'
+            return 'empty', 'Empty Image Path.'
         
     ts = str(int(time.time()))
     params = '{"type":"user_returns","resource_id":"0","timestemp":"%s"}'%ts
@@ -120,7 +120,7 @@ def uploadImage(imgType, fromLink, path=None):
         result = json.loads(resp.content)
         if result['code'] != 200:
             logging.error(result['content'])
-            return False, result['content']
+            return 'fail', result['content']
         else:
             if mdl != None:
                 mdl.srvLink = result['content']
@@ -133,8 +133,8 @@ def uploadImage(imgType, fromLink, path=None):
                     'srvLink':result['content']
                 }
                 pushInto(LinkMap, info, ['fromLink'])
-            return True, result['content']
+            return 'succ', result['content']
     except Exception, e:
         pdb.set_trace()
-        return False, str(e)
+        return 'fail', str(e)
         

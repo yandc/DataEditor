@@ -714,14 +714,11 @@ class Link2Map(Editor):
         
 class Image2Server(Editor):
     srcModel = Article
-    batchSize = 10
-
     def loadCheckPoint(self):
         self.checkPoint = 0
-
     def loadData(self):
         srcModel = self.srcModel
-        return srcModel.select().where((srcModel.status==INIT_STATUS) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
+        return srcModel.select().where((srcModel.status==DOWNLOAD_STATUS) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
     
     def edit(self, model):
         ret = 0
@@ -736,32 +733,31 @@ class Image2Server(Editor):
                 return ret
             
         srvLinks = []
-        count = {'downbroken':0, 'succ':0, 'upfail':0, 'repeat':0}
+        count = {'succ':0, 'fail':0, 'broken':0, 'repeat':0, 'empty':0}
+        validCount = 0
         for pic in pics:
-            status, msg = uploadImage('article', pic)
-            if status == True:
-                count['succ'] += 1
-            elif status == False:
-                count['upfail'] += 1
-                return 0
-            elif status == -1:
-                count['downbroken'] += 1
+            if pic.find('http') != 0:
                 continue
-            else:
-                count['repeat'] += 1
+            validCount += 1
+            status, msg = uploadImage('article', pic)
+            count[status] += 1
+            if status == 'fail':
+                validCount -= 1
+                continue
+            if status == 'broken' or status == 'empty':
+                continue
             srvLinks.append(msg)
 
         logging.info('%s/%s in %s.'%(str(count), len(pics), model.id))
         model.srvPics = json.dumps(srvLinks)
-        if len(srvLinks) == len(pics):
+        if len(srvLinks) == validCount:
             model.status = UPLOADED_STATUS
         model.save()
         
-        return ret
+        return 1
 
 class PostImport(Editor):
     srcModel = Article
-    batchSize = 10
     def loadCheckPoint(self):
         self.checkPoint = 0
         
@@ -770,6 +766,15 @@ class PostImport(Editor):
         return srcModel.select().where(((srcModel.status==UPLOADED_STATUS) | (srcModel.status==BROKEN_STATUS)) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
 
     def edit(self, model):
+        try:
+            text = '\n'.join(json.loads(model.text))
+        except Exception, e:
+            text = model.text
+        try:
+            title = json.loads(model.title)
+        except:
+            title = model.title
+
         info = {
             'class':'Robot',
             'action':'importSubjectMaterial',
@@ -777,7 +782,7 @@ class PostImport(Editor):
                 'import_data':{
                     'id':str(model.id),
                     'title':model.title,
-                    'text':model.text,
+                    'text':text,
                     'srvPics':model.srvPics,
                     'catgy':model.catgy,
                     'keyword':model.keyword,
@@ -803,43 +808,59 @@ class PostImport(Editor):
         return 0
     
 class AvatarImport(Editor):
-    srcModel = Links
+    srcModel = Avatar
     batchSize = 10
-
+    def loadCheckPoint(self):
+        self.checkPoint = 0
     def edit(self, model):
-        idx = model.link.rfind('.')
+        idx = model.pic.rfind('.')
         suffix = ''
         if idx > 0:
-            suffix = model.link[idx+1:]
-        path = '/data/links/%s.%s'%(model.id, suffix)
+            suffix = model.pic[idx+1:]
+        path = '/opt/data/avatar/%s.%s'%(model.id, suffix)
         if not os.path.exists(path):
             return 0
-
-        status, msg = uploadImage('avatar', model.link, path)
-        if status != True:
-            return 0
-        info = {
-            'class':'Robot',
-            'action':'importAvatarMaterial',
-            'params':{
-                'import_data':{
-                    'id':model.id,
-                    'link':msg
-                }
-            }
-        }
+        
+        status, msg = uploadImage('avatar', model.pic, path)
         try:
-            resp = requests.post('http://groupservice.miyabaobei.com', json=info)
-            result = json.loads(resp.content)
-            if result['code'] != 0:
-                pdb.set_trace()
-                logging.error(result['msg'])
-            else:
-                return 1
+            if status == True:
+                infoPic = {
+                    'class':'Robot',
+                    'action':'importAvatarMaterial',
+                    'params':{
+                        'import_data':{
+                            'id':model.id,
+                            'link':msg,
+                            'category':model.catgy
+                        }
+                    }
+                }
+                resp = requests.post('http://groupservice.miyabaobei.com', json=infoPic)
+                result = json.loads(resp.content)
+                if result['code'] != 0:
+                    logging.error(result['msg'])
+                    return 0
+            if model.name:
+                infoName = {
+                    'class':'Robot',
+                    'action':'importNicknameMaterial',
+                    'params':{
+                        'import_data':{
+                            'nickname':model.name,
+                            'category':model.catgy
+                        }
+                    }
+                }
+                resp = requests.post('http://groupservice.miyabaobei.com', json=infoName)
+                result = json.loads(resp.content)
+                if result['code'] != 0:
+                    logging.error(result['msg'])
+                    return 0
         except Exception, e:
             pdb.set_trace()
             logging.error(str(e))
-        return 0
+            return 0
+        return 1
         
 class PicsFilter(Editor):
     srcModel = Article
@@ -883,24 +904,87 @@ class MapRepair(Editor):
         
     def loadData(self):
         srcModel = self.srcModel
-        return srcModel.select().where(srcModel.id>self.checkPoint).order_by(srcModel.id).limit(self.batchSize)
+        return srcModel.select().where((srcModel.source%'weibo:%') &(srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
 
     def edit(self, model):
         try:
             pics = json.loads(model.pics)
-        except Exception, e:
-            logging.error(str(e))
-            return 0
+            imgs = []
+            for pic in pics:
+                idx1 = pic.rfind('/')
+                idx2 = pic[:idx1].rfind('/')
+                pic = pic[:idx2]+'/mw690'+pic[idx1:]
+                imgs.append(pic)
+            if len(imgs) > 0:
+                model.pics = json.dumps(imgs)
+                model.status = 'INIT'
+                model.save()
+                mdls = LinkMap.select().where(LinkMap.srcId==model.id)
+                for mdl in mdls:
+                    if mdl.toLink and os.path.exists(mdl.toLink):
+                        os.remove(mdl.toLink)
+                    mdl.status = 'Discard'
+                    mdl.toLink = ''
+                    mdl.save()
+                return 1
 
-        result = []
-        for pic in pics:
-            if pic.find('http') != 0:
-                continue
-            try:
-                mdl = LinkMap.select().where(LinkMap.fromLink==pic).get()
-                mdl.source = model.source
-                mdl.srcId = model.id
-                mdl.save()
-            except:
-                pass
-        return 1
+#            sect = model.source.split(':')[0]
+#            fakeUrl = '%s//%s'%(sect, model.srcId)
+#            try:
+#                mdl = SpyLog.select().where(SpyLog.link==fakeUrl).get()
+#            except:
+#                mdl = SpyLog.select().where(SpyLog.link==model.srcId).get()
+#            ele = json.loads(mdl.eles)
+#            model.text = json.dumps(ele['text'])
+        except Exception, e:
+            logging.error('%s, %s'%(str(e), model.id))
+            return 0
+        
+#        try:
+#            pics = json.loads(model.pics)
+#        except Exception, e:
+#            logging.error(str(e))
+#            return 0
+#
+#        result = []
+#        for pic in pics:
+#            if pic.find('http') != 0:
+#                continue
+#            try:
+#                mdl = LinkMap.select().where(LinkMap.fromLink==pic).get()
+#                if not mdl.srcId:
+#                    mdl.source = model.source
+#                    mdl.srcId = model.id
+#                    mdl.save()
+#                if mdl.status == 'Fail' and str(mdl.creationTime) > '2017-04-10':
+#                    model.status = 'INIT'
+#                    model.save()
+#            except:
+#                pass
+        return 0
+
+import cv2
+class AvatarFilter(Editor):
+    srcModel = LinkMap
+    cascade = cv2.CascadeClassifier('/usr/share/opencv/haarcascades/haarcascade_frontalface_alt.xml')
+    fp = open('faceId.txt', 'w')
+    def __del__(self):
+        self.fp.close()
+    def loadData(self):
+        srcModel = self.srcModel
+        return srcModel.select().where((srcModel.id>self.checkPoint) & (srcModel.status=='Succ') & (srcModel.source=='douban')).limit(self.batchSize)
+
+    def edit(self, model):
+        path = model.toLink
+        if not path or not os.path.exists(path):
+            return 0
+        try:
+            img = cv2.imread(path)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            faces = self.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=2)
+            if len(faces) > 0:
+                self.fp.write(str(model.srcId)+'\n')
+                return 1
+        except Exception, e:
+            logging.error('%s %s'%(str(e), path))
+        return 0
