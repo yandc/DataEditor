@@ -727,10 +727,6 @@ class Image2Server(Editor):
         except Exception, e:
             logging.error(str(e))
             return 0
-        if model.srvPics:
-            srvPics = json.loads(model.srvPics)
-            if len(pics) == len(srvPics):
-                return ret
             
         srvLinks = []
         count = {'succ':0, 'fail':0, 'broken':0, 'repeat':0, 'empty':0}
@@ -752,8 +748,9 @@ class Image2Server(Editor):
         model.srvPics = json.dumps(srvLinks)
         if len(srvLinks) == validCount:
             model.status = UPLOADED_STATUS
+        elif count['empty'] > 0:
+            model.status = INIT_STATUS
         model.save()
-        
         return 1
 
 class PostImport(Editor):
