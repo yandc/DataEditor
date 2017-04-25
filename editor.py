@@ -778,7 +778,7 @@ class PostImport(Editor):
             'params':{
                 'import_data':{
                     'id':str(model.id),
-                    'title':model.title,
+                    'title':title,
                     'text':text,
                     'srvPics':model.srvPics,
                     'catgy':model.catgy,

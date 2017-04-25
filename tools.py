@@ -112,10 +112,10 @@ def uploadImage(imgType, fromLink, path=None):
         name = '%s.%s'%(name[:-5], 'jpg')
     else:
         name += '.jpg'
-    files = {'Filedata':(name, open(path, 'rb'), 'image/jpeg')}
-    
+
     url = 'http://uploads.miyabaobei.com/app_upload.php'
     try:
+        files = {'Filedata':(name, open(path, 'rb'), 'image/jpeg')}
         resp = requests.post(url, data=args, files=files)
         result = json.loads(resp.content)
         if result['code'] != 200:
