@@ -135,6 +135,5 @@ def uploadImage(imgType, fromLink, path=None):
                 pushInto(LinkMap, info, ['fromLink'])
             return 'succ', result['content']
     except Exception, e:
-        pdb.set_trace()
         return 'fail', str(e)
         

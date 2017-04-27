@@ -39,6 +39,9 @@ class Editor:
     def saveCheckPoint(self):
         key = 'Patcher:%s:Checkpoint'%self.__class__.__name__
         pushInto(Offset, {'name':key, 'offset':self.checkPoint}, ['name'])
+
+    def finish(self):
+        pass
                         
     def run(self):
         count = 0
@@ -51,6 +54,7 @@ class Editor:
                 count += self.edit(row)
                 self.setCheckPoint(row)
                 self.progress()
+        self.finish()
         self.saveCheckPoint()
         logging.info('%s Done %s/%s'%(clsName, count, self.count))
 
@@ -985,3 +989,190 @@ class AvatarFilter(Editor):
         except Exception, e:
             logging.error('%s %s'%(str(e), path))
         return 0
+
+class SimPost(Editor):
+    filename = 'data/postdata'
+    index = {}
+    indexInc = {}
+    postInfo = {}
+    postInfoInc = {}
+    months = []
+    thresh = 0.2
+    part = 0
+    partFlag = False
+    maxPostNum = 200000
+    minWords = 10
+    def __init__(self):
+        Editor.__init__(self)
+        self.fp = open(self.filename)
+
+    def setCheckPoint(self, post):
+        return int(post[0])
+
+    def loadData(self):
+        res = []
+        count = 0
+        for line in self.fp:
+            if count > self.batchSize:
+                break
+            post = line.split('\t')
+            while len(post) < 18:
+                line += self.fp.next()
+                post = line.split('\t')
+            res.append(post)
+            count += 1
+        return res
+
+    def edit(self, post):
+        try:
+            pid = int(post[0])
+            title = post[11]
+            content = post[12]
+            imgNum = post[3]
+            textLen = post[4]
+            postPv = post[7]
+            month = post[8][:7]
+            sku = post[10]
+        except:
+            pdb.set_trace()
+            return 0
+        if sku == 'NULL':
+            return 0
+        if os.path.exists('data/sim-%s.txt'%month):
+            return 0
+        
+        text = ''
+        if title != 'NULL':
+            text += title
+        if content != 'NULL':
+            text += content
+        words = set()
+        asi = 0
+        count = 0
+        text = text.lower().decode()
+        for word in text:
+            v = ord(word)
+            if v >= 19904 and v <= 40895:
+                if asi != 0:
+                    words.add(asi)
+                    asi = 0
+                    count = 0
+                words.add(v)
+            elif (v >= ord('a') and v <= ord('z')) or (v >= ord('0') and v <= ord('9')):
+                if count == 4:
+                    continue
+                asi <<= 8
+                asi += v
+                count += 1
+            else:
+                if asi != 0:
+                    words.add(asi)
+                    asi = 0
+                    count = 0
+        if asi != 0:
+            words.add(asi)
+        if len(words) < self.minWords:
+            return 0
+
+        #[wordCount, info, matchId, maxSim, simPid]
+        pinfo = '%s,%s,%s'%(imgNum, postPv, textLen)
+        self.postInfo[pid] = [len(words), pinfo, 0, 0, 0]
+        self.postInfoInc[pid] = [len(words), pinfo, 0, 0, 0]
+        for word in words:
+            if word not in self.index:
+                self.index[word] = []
+            if word not in self.indexInc:
+                self.indexInc[word] = []
+            self.index[word].append(pid)
+            self.indexInc[word].append(pid)
+
+        if month not in self.months:#new month
+            self.part = 0
+            self.partFlag = False
+            length = len(self.months)
+            if length < 2:
+                self.index = self.indexInc
+                self.indexInc = {}
+                self.postInfo = self.postInfoInc
+                self.postInfoInc = {}
+                self.months.append(month)
+                return 1
+        elif len(self.postInfo) > self.maxPostNum or len(self.postInfoInc) > self.maxPostNum/2:#too much post
+            self.partFlag = True
+        else:
+            return 1
+
+        #batch end, calc intersect
+        logging.info('Calc intersect, post num: %s, index len:%s'%(len(self.postInfo), len(self.index)))
+        intersect = {}
+        for word, pidList in self.index.iteritems():
+            if len(pidList) > 0.03*len(self.postInfo):
+                continue
+            for pid1 in pidList:
+                if pid1 not in intersect:
+                    intersect[pid1] = {}
+                for pid2 in pidList:
+                    if pid1 >= pid2:
+                        continue
+                    if pid2 not in intersect[pid1]:
+                        intersect[pid1][pid2] = 0
+                    intersect[pid1][pid2] += 1
+
+        _list = []
+        logging.info('Calc sim...')
+        matchId = 0
+        matchList = set()
+        for pid1, inter in intersect.iteritems():
+            for pid2, count in inter.iteritems():
+                post1 = self.postInfo[pid1]
+                post2 = self.postInfo[pid2]
+                sim = float(count)/(post1[0]+post2[0]-count)
+                if sim > self.thresh:
+                    mid = max(post1[2], post2[2])
+                    if mid == 0:
+                        matchId += 1
+                        mid = matchId
+                    
+                    post1[2] = mid
+                    post2[2] = mid
+                    if sim > post1[3]:
+                        post1[3] = sim
+                        post1[4] = pid2
+                    if sim > post2[3]:
+                        post2[3] = sim
+                        post2[4] = pid1
+                    matchList.add(pid1)
+                    matchList.add(pid2)
+        _li = sorted(matchList, key=lambda x:str(self.postInfo[x][2])+','+self.postInfo[x][1], reverse=True)
+
+        if self.partFlag == True:
+            name1 = 'data/sim-%s-part%s.txt'%(self.months[-1], self.part)
+            name2 = 'data/dup-%s-part%s.txt'%(self.months[-1], self.part)
+            self.part += 1
+        else:
+            name1 = 'data/sim-%s.txt'%self.months[-1]
+            name2 = 'data/dup-%s.txt'%self.months[-1]
+
+        posts = [[x]+self.postInfo[x] for x in _li]
+        fp = open(name1, 'w')
+        fp.write(json.dumps(posts))
+        fp.close()
+        
+        mid = 0
+        discard = []
+        for post in posts:
+            if post[3] == mid:
+                discard.append(post[0])
+            else:
+                mid = post[3]
+        fp = open(name2, 'w')
+        fp.write(json.dumps(discard))
+        fp.close()
+        
+        self.index = self.indexInc
+        self.indexInc = {}
+        self.postInfo = self.postInfoInc
+        self.postInfoInc = {}
+        if month not in self.months:
+            self.months.append(month)
+        return 1
