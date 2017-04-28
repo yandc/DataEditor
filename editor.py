@@ -993,7 +993,6 @@ class AvatarFilter(Editor):
 import heapq
 import hashlib
 class SimPost(Editor):
-    filename = 'data/postdata'
     index = {}
     indexInc = {}
     postInfo = {}
@@ -1002,15 +1001,18 @@ class SimPost(Editor):
     maxPostNum = 200000
     minWords = 10
     batchSize = 10000
-    def __init__(self):
-        Editor.__init__(self)
-        self.fp = open(self.filename)
-        self.startDate = str(datetime.date.today() - datetime.timedelta(days=90))
-
+    fp = None
+    
     def setCheckPoint(self, post):
         return int(post[0])
 
     def loadData(self):
+        if self.fp == None:
+            yday = str(datetime.date.today() - datetime.timedelta(days=1))
+            filename = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%yday
+            self.fp = open(self.filename)
+            self.startDate = str(datetime.date.today() - datetime.timedelta(days=90))
+
         res = []
         count = 0
         for line in self.fp:
@@ -1128,8 +1130,11 @@ class SimPost(Editor):
 
     def finish(self):
         today = str(datetime.date.today())
-        name1 = 'data/sim-%s.txt'%today
-        name2 = 'data/dup-%s.txt'%today
+        path = '/opt/article_in_mia/deduped/%s'%today
+        if os.path.exists(path):
+            os.mkdir(path)
+        name1 = path+'sim.txt'
+        name2 = path+'dup.txt'
         dupList = self.calcDupList()
         posts = [[x]+self.postInfo[x] for x in dupList]
         fp = open(name1, 'w')
