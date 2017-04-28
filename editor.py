@@ -992,6 +992,7 @@ class AvatarFilter(Editor):
 
 import heapq
 import hashlib
+import os
 class SimPost(Editor):
     index = {}
     indexInc = {}
@@ -1008,8 +1009,9 @@ class SimPost(Editor):
 
     def loadData(self):
         if self.fp == None:
-            yday = str(datetime.date.today() - datetime.timedelta(days=1))
-            filename = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%yday
+            yday = datetime.date.today() - datetime.timedelta(days=1)
+            self.dupDate = yday.strftime('%Y%m%d')
+            filename = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%self.dupDate
             self.fp = open(self.filename)
             self.startDate = str(datetime.date.today() - datetime.timedelta(days=90))
 
@@ -1103,7 +1105,6 @@ class SimPost(Editor):
         except:
             pdb.set_trace()
             return 0
-        pdb.set_trace()
         if sku == 'NULL':
             return 0
         if date < self.startDate:
@@ -1129,8 +1130,7 @@ class SimPost(Editor):
         return 1
 
     def finish(self):
-        today = str(datetime.date.today())
-        path = '/opt/article_in_mia/deduped/%s'%today
+        path = '/opt/article_in_mia/deduped/%s'%self.dupDate
         if os.path.exists(path):
             os.mkdir(path)
         name1 = path+'sim.txt'
