@@ -764,9 +764,11 @@ class PostImport(Editor):
         
     def loadData(self):
         srcModel = self.srcModel
-        return srcModel.select().where(((srcModel.status==UPLOADED_STATUS) | (srcModel.status==BROKEN_STATUS)) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
+        #return srcModel.select().where(((srcModel.status==UPLOADED_STATUS) | (srcModel.status==BROKEN_STATUS)) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
+        return srcModel.select().where(srcModel.id == 537897)
 
     def edit(self, model):
+        pdb.set_trace()
         try:
             text = '\n'.join(json.loads(model.text))
         except Exception, e:
@@ -1012,7 +1014,7 @@ class SimPost(Editor):
             yday = datetime.date.today() - datetime.timedelta(days=1)
             self.dupDate = yday.strftime('%Y%m%d')
             filename = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%self.dupDate
-            self.fp = open(self.filename)
+            self.fp = open(filename)
             self.startDate = str(datetime.date.today() - datetime.timedelta(days=90))
 
         res = []
@@ -1095,6 +1097,7 @@ class SimPost(Editor):
     def edit(self, post):
         try:
             pid = int(post[0])
+            uid = int(post[7])
             title = post[11]
             content = post[12]
             imgNum = post[3]
@@ -1102,11 +1105,11 @@ class SimPost(Editor):
             postPv = post[7]
             date = post[8][:10]
             sku = post[10]
+            typ = post[2]
         except:
             pdb.set_trace()
             return 0
-        if sku == 'NULL':
-            return 0
+        pushInto(PostInfo, {'postid':pid, 'uid':uid, 'type':typ, 'ctime':post[8]}, ['postid'])
         if date < self.startDate:
             return 0
         
@@ -1131,10 +1134,10 @@ class SimPost(Editor):
 
     def finish(self):
         path = '/opt/article_in_mia/deduped/%s'%self.dupDate
-        if os.path.exists(path):
+        if not os.path.exists(path):
             os.mkdir(path)
-        name1 = path+'sim.txt'
-        name2 = path+'dup.txt'
+        name1 = path+'/sim.txt'
+        name2 = path+'/dup.txt'
         dupList = self.calcDupList()
         posts = [[x]+self.postInfo[x] for x in dupList]
         fp = open(name1, 'w')
@@ -1151,4 +1154,48 @@ class SimPost(Editor):
         fp = open(name2, 'w')
         fp.write(json.dumps(discard))
         fp.close()
+
+import redis
+class PostStats(Editor):
+    def loadData(self):
+        date = datetime.date(2017, 4, 20)
+        while True:
+            #expose data of list page
+            rds = redis.StrictRedis(host = '10.1.60.190')
+            for key in rds.keys('sessionid_*_%s'%date.strftime('%Y%m%d')):
+                for ele in rds.lrange(key, start=0, end=-1):
+                    info = {'postid':ele,
+                            'uid':0,
+                            'time':str(date),
+                            'event':'expose',
+                            'num':1}
+                    pushInto(PostStats, info)
+
+            #expost data of detail page
+            for key in rds.keys('sessionid_detail_%s*'%date.strftime('%Y%m%d')):
+                for ele in rds.lrange(key, start=0, end=-1):
+                    info = {'postid':ele,
+                             'uid':0,
+                             'time':str(date),
+                             'event':'expose',
+                             'num':1}
+                    pushInto(PostStats, info)
+
+            #click data
+            path = '/opt/parsed_data/uv/%s/1/'%date.strftime('%Y%m%d')
+            for name in os.listdir(path):
+                if name[:4] != 'part':
+                    continue
+                for line in open(path+name):
+                    li = line[3:-1].split("',")
+                    info = {'postid':int(li[0]),
+                             'uid':0,
+                             'time':str(date),
+                             'event':'click',
+                             'num':int(li[1])}
+                    pushInto(PostStats, info)
+            if date == datetime.date.today():
+                break
+            date += datetime.timedelta(days=1)
+
         
