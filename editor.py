@@ -1109,7 +1109,6 @@ class SimPost(Editor):
         except:
             pdb.set_trace()
             return 0
-        pushInto(PostInfo, {'postid':pid, 'uid':uid, 'type':typ, 'ctime':post[8]}, ['postid'])
         if date < self.startDate:
             return 0
         
@@ -1156,30 +1155,33 @@ class SimPost(Editor):
         fp.close()
 
 import redis
-class PostStats(Editor):
+class PostUniform(Editor):
     def loadData(self):
+        rds = redis.StrictRedis(host = '10.1.60.190')
         date = datetime.date(2017, 4, 20)
         while True:
+            stats = {}
             #expose data of list page
-            rds = redis.StrictRedis(host = '10.1.60.190')
             for key in rds.keys('sessionid_*_%s'%date.strftime('%Y%m%d')):
                 for ele in rds.lrange(key, start=0, end=-1):
-                    info = {'postid':ele,
-                            'uid':0,
-                            'time':str(date),
-                            'event':'expose',
-                            'num':1}
-                    pushInto(PostStats, info)
+                    if not ele:
+                        continue
+                    for postid in ele.split(','):
+                        pid = int(postid)
+                        if pid not in stats:
+                            stats[pid] = []
+                        stats[pid].append((str(date), 'expose', 'list', 1))
 
             #expost data of detail page
             for key in rds.keys('sessionid_detail_%s*'%date.strftime('%Y%m%d')):
                 for ele in rds.lrange(key, start=0, end=-1):
-                    info = {'postid':ele,
-                             'uid':0,
-                             'time':str(date),
-                             'event':'expose',
-                             'num':1}
-                    pushInto(PostStats, info)
+                    if not ele:
+                        continue
+                    for postid in ele.split(','):
+                        pid = int(postid)
+                        if pid not in stats:
+                            stats[pid] = []
+                        stats[pid].append((str(date), 'expose', 'list', 1))
 
             #click data
             path = '/opt/parsed_data/uv/%s/1/'%date.strftime('%Y%m%d')
@@ -1188,14 +1190,31 @@ class PostStats(Editor):
                     continue
                 for line in open(path+name):
                     li = line[3:-1].split("',")
-                    info = {'postid':int(li[0]),
-                             'uid':0,
-                             'time':str(date),
-                             'event':'click',
-                             'num':int(li[1])}
-                    pushInto(PostStats, info)
+                    pid = int(li[0])
+                    if pid not in stats:
+                        stats[pid] = []
+                    stats[pid].append((str(date), 'click', 'uv', int(li[1])))
+
+            
+            #calc stats
+            result = {}
+            for postid, eles in stats.iteritems():
+                for ele in eles:
+                    event = ele[1]
+                    num = ele[3]
+                    
+                    click = 0
+                    expose = 0
+                    if event == 'click':
+                        click += num
+                    if event == 'expose':
+                        expose += num
+                result[postid] = (click, expose, float(click)/expose)
+            fp = open('data/'+str(date), 'w')
+            fp.write(json.dumps(result))
+            fp.close()
+
             if date == datetime.date.today():
                 break
             date += datetime.timedelta(days=1)
-
-        
+            
