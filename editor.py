@@ -966,10 +966,10 @@ class MapRepair(Editor):
 #                pass
         return 0
 
-import cv2
+#import cv2
 class AvatarFilter(Editor):
     srcModel = LinkMap
-    cascade = cv2.CascadeClassifier('/usr/share/opencv/haarcascades/haarcascade_frontalface_alt.xml')
+#    cascade = cv2.CascadeClassifier('/usr/share/opencv/haarcascades/haarcascade_frontalface_alt.xml')
     fp = open('faceId.txt', 'w')
     def __del__(self):
         self.fp.close()
@@ -1015,7 +1015,7 @@ class SimPost(Editor):
             self.dupDate = yday.strftime('%Y%m%d')
             filename = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%self.dupDate
             self.fp = open(filename)
-            self.startDate = str(datetime.date.today() - datetime.timedelta(days=90))
+            self.startDate = str(datetime.date.today() - datetime.timedelta(days=300))
 
         res = []
         count = 0
@@ -1097,7 +1097,7 @@ class SimPost(Editor):
     def edit(self, post):
         try:
             pid = int(post[0])
-            uid = int(post[7])
+            uid = int(post[1])
             title = post[11]
             content = post[12]
             imgNum = post[3]
@@ -1114,7 +1114,7 @@ class SimPost(Editor):
         
         text = ''
         if title != 'NULL':
-            text = title+','
+            text = title+',,,'
         if content != 'NULL':
             text += content
         sentList = self.splitTextSent(text)
@@ -1128,7 +1128,7 @@ class SimPost(Editor):
             self.index[sent].add(pid)
         #[wordCount, info, matchId, maxSim, simPid]
         pinfo = '%s,%s,%s'%(imgNum, postPv, textLen)
-        self.postInfo[pid] = [len(topSent), pinfo, 0, 0, 0]
+        self.postInfo[pid] = [len(topSent), pinfo, 0, 0, 0, uid, post[8], text]
         return 1
 
     def finish(self):
@@ -1140,7 +1140,8 @@ class SimPost(Editor):
         dupList = self.calcDupList()
         posts = [[x]+self.postInfo[x] for x in dupList]
         fp = open(name1, 'w')
-        fp.write(json.dumps(posts))
+        for post in posts:
+            fp.write('\t'.join([str(x) for x in [post[0], post[3], post[6], post[7], post[8]]]) + '\n')
         fp.close()
         
         matchid = 0
@@ -1155,33 +1156,72 @@ class SimPost(Editor):
         fp.close()
 
 import redis
+import copy
 class PostUniform(Editor):
     def loadData(self):
         rds = redis.StrictRedis(host = '10.1.60.190')
-        date = datetime.date(2017, 4, 20)
-        while True:
-            stats = {}
-            #expose data of list page
-            for key in rds.keys('sessionid_*_%s'%date.strftime('%Y%m%d')):
-                for ele in rds.lrange(key, start=0, end=-1):
-                    if not ele:
-                        continue
-                    for postid in ele.split(','):
-                        pid = int(postid)
-                        if pid not in stats:
-                            stats[pid] = []
-                        stats[pid].append((str(date), 'expose', 'list', 1))
 
-            #expost data of detail page
-            for key in rds.keys('sessionid_detail_%s*'%date.strftime('%Y%m%d')):
-                for ele in rds.lrange(key, start=0, end=-1):
-                    if not ele:
-                        continue
-                    for postid in ele.split(','):
-                        pid = int(postid)
-                        if pid not in stats:
-                            stats[pid] = []
-                        stats[pid].append((str(date), 'expose', 'list', 1))
+        #load care info
+        careInfo = {}
+        fname = 'data/care.txt'
+        for line in open(fname):
+            li = line.split(',')
+            careInfo[int(li[0])] = {'stat':[0, 0, 0, 0, 0]}
+
+        #load post info
+        pinfo = {}
+        yday = datetime.date.today() - datetime.timedelta(days=1)
+        date = yday
+        fname = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%yday.strftime('%Y%m%d')
+        fp = open(fname)
+        for line in fp:
+            post = line.split('\t')
+            while len(post) < 18:
+                line += fp.next()
+                post = line.split('\t')
+            pid = int(post[0])
+            uid = int(post[1])
+            ts = post[8]
+            pinfo[pid] = [uid, ts]
+            if uid in careInfo:
+                careInfo[uid]['stat'][4] += 1
+        fp.close()
+
+        #load post info
+        while True:
+            #ready data
+            path = '/opt/parsed_data/did_article/%s/'%date.strftime('%Y%m%d')
+            if not os.path.exists(path):
+                os.mkdir(path)
+                os.system('/usr/local/hadoop/bin/hadoop fs -get  /search/userprofile/%s/article/part* %s'%(date.strftime('%Y%m%d'), path))
+            careInfo2 = copy.deepcopy(careInfo)
+            stats = {}
+            #expose data
+            for fname in os.listdir(path):
+                for line in open(path+fname):
+                    idx = line.find("',")
+                    key = line[3:idx]
+                    lkey = 'sessionid_%s_%s'%(key, date.strftime('%Y%m%d'))
+                    dkey = 'sessionid_detail_%s_%s'%(date.strftime('%Y%m%d'), key)
+                    #expose data of list page
+                    for ele in rds.lrange(lkey, start=0, end=-1):
+                        if not ele:
+                            continue
+                        for postid in ele.split(','):
+                            pid = int(postid)
+                            if pid not in stats:
+                                stats[pid] = [0, 0, 0]
+                            stats[pid][1] += 1
+
+                    #expost data of detail page
+                    for ele in rds.lrange(dkey, start=0, end=-1):
+                        if not ele:
+                            continue
+                        for postid in ele.split(','):
+                            pid = int(postid)
+                            if pid not in stats:
+                                stats[pid] = [0, 0, 0]
+                            stats[pid][1] += 1
 
             #click data
             path = '/opt/parsed_data/uv/%s/1/'%date.strftime('%Y%m%d')
@@ -1189,32 +1229,55 @@ class PostUniform(Editor):
                 if name[:4] != 'part':
                     continue
                 for line in open(path+name):
-                    li = line[3:-1].split("',")
+                    li = line[3:-2].split("',")
                     pid = int(li[0])
                     if pid not in stats:
-                        stats[pid] = []
-                    stats[pid].append((str(date), 'click', 'uv', int(li[1])))
-
+                        stats[pid] = [0, 0, 0]
+                    stats[pid][0] += int(li[1])
             
-            #calc stats
-            result = {}
-            for postid, eles in stats.iteritems():
-                for ele in eles:
-                    event = ele[1]
-                    num = ele[3]
-                    
-                    click = 0
-                    expose = 0
-                    if event == 'click':
-                        click += num
-                    if event == 'expose':
-                        expose += num
-                result[postid] = (click, expose, float(click)/expose)
+            #calc crt
+            count1 = 0
+            count2 = 0
+            for pid, stat in stats.iteritems():
+                click = stat[0]
+                expose = stat[1]
+                if expose > 0:
+                    if click > 0:
+                        count2 += 1
+                    count1 += 1
+                    stat[2] = float(click)/(expose+click)
+                else:
+                    stat[2] = 0
+                if pid in pinfo:
+                    uid = pinfo[pid][0]
+                    ts = pinfo[pid][1]
+                    stat += pinfo[pid]
+                    if uid in careInfo2:
+                        careInfo2[uid][pid] = stat
+            print '%s: %s/%s/%s'%(str(date), count2, count1, len(stats))
+            #pid: click, expose, crt, uid, ts
             fp = open('data/'+str(date), 'w')
-            fp.write(json.dumps(result))
+            fp.write(json.dumps(stats))
             fp.close()
 
-            if date == datetime.date.today():
+            for uid, pstat in careInfo2.iteritems():
+                for pid, stat in pstat.iteritems():
+                    if pid == 'stat':
+                        continue
+                    if pid not in pinfo or pinfo[pid][0] != uid:
+                        print pid
+                    if stat[1] > 0:
+                        careInfo2[uid]['stat'][0] += stat[1]
+                        careInfo2[uid]['stat'][1] += 1
+                    if stat[0] > 0:
+                        careInfo2[uid]['stat'][2] += stat[0]
+                        careInfo2[uid]['stat'][3] += 1
+            fp = open('data/care-'+str(date), 'w')
+            for uid, pstat in careInfo2.iteritems():
+                fp.write(str(uid) + '\t' + '\t'.join([str(x) for x in pstat['stat']]) + '\n')
+            fp.close()
+            if date == yday:
                 break
             date += datetime.timedelta(days=1)
-            
+
+        return []
