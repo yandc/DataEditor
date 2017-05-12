@@ -1166,7 +1166,7 @@ class PostUniform(Editor):
         fname = 'data/care.txt'
         for line in open(fname):
             li = line.split(',')
-            careInfo[int(li[0])] = {'stat':[0, 0, 0, 0, 0]}
+            careInfo[int(li[0])] = {'stat':[0, 0, 0, 0, 0, 0, li[1].decode().encode('gbk')]}
 
         #load post info
         pinfo = {}
@@ -1187,6 +1187,10 @@ class PostUniform(Editor):
                 careInfo[uid]['stat'][4] += 1
         fp.close()
 
+        postExposeCount = {}
+        postExposeTime = {}
+        postClickCount = {}
+        postClickTime = {}
         #load post info
         while True:
             #ready data
@@ -1207,21 +1211,47 @@ class PostUniform(Editor):
                     for ele in rds.lrange(lkey, start=0, end=-1):
                         if not ele:
                             continue
+                        exposePos = 0
                         for postid in ele.split(','):
                             pid = int(postid)
                             if pid not in stats:
-                                stats[pid] = [0, 0, 0]
+                                stats[pid] = [0, 0, 0, 0]
                             stats[pid][1] += 1
+                            stats[pid][3] += exposePos
+                            exposePos += 1
+                            if pid not in postExposeCount:
+                                postExposeCount[pid] = 0
+                            postExposeCount[pid] += 1
+                            if pid not in pinfo:
+                                continue
+                            cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
+                            diff = date - cdate
+                            if diff.days not in postExposeTime:
+                                postExposeTime[diff.days] = 0
+                            postExposeTime[diff.days] += 1
 
                     #expost data of detail page
                     for ele in rds.lrange(dkey, start=0, end=-1):
                         if not ele:
                             continue
+                        exposePos = 0
                         for postid in ele.split(','):
                             pid = int(postid)
                             if pid not in stats:
-                                stats[pid] = [0, 0, 0]
+                                stats[pid] = [0, 0, 0, 0]
                             stats[pid][1] += 1
+                            stats[pid][3] += exposePos
+                            exposePos += 1
+                            if pid not in postExposeCount:
+                                postExposeCount[pid] = 0
+                            postExposeCount[pid] += 1
+                            if pid not in pinfo:
+                                continue
+                            cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
+                            diff = date - cdate
+                            if diff.days not in postExposeTime:
+                                postExposeTime[diff.days] = 0
+                            postExposeTime[diff.days] += 1
 
             #click data
             path = '/opt/parsed_data/uv/%s/1/'%date.strftime('%Y%m%d')
@@ -1232,8 +1262,18 @@ class PostUniform(Editor):
                     li = line[3:-2].split("',")
                     pid = int(li[0])
                     if pid not in stats:
-                        stats[pid] = [0, 0, 0]
+                        stats[pid] = [0, 0, 0, 0]
                     stats[pid][0] += int(li[1])
+                    if pid not in postClickCount:
+                        postClickCount[pid] = 0
+                    postClickCount[pid] += int(li[1])
+                    if pid not in pinfo:
+                        continue
+                    cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
+                    diff = date - cdate
+                    if diff.days not in postClickTime:
+                        postClickTime[diff.days] = 0
+                    postClickTime[diff.days] += 1
             
             #calc crt
             count1 = 0
@@ -1241,13 +1281,10 @@ class PostUniform(Editor):
             for pid, stat in stats.iteritems():
                 click = stat[0]
                 expose = stat[1]
-                if expose > 0:
-                    if click > 0:
-                        count2 += 1
-                    count1 += 1
-                    stat[2] = float(click)/(expose+click)
-                else:
-                    stat[2] = 0
+                if click > 0:
+                    count2 += 1
+                count1 += 1
+                stat[2] = float(click)/(expose+click)
                 if pid in pinfo:
                     uid = pinfo[pid][0]
                     ts = pinfo[pid][1]
@@ -1257,7 +1294,9 @@ class PostUniform(Editor):
             print '%s: %s/%s/%s'%(str(date), count2, count1, len(stats))
             #pid: click, expose, crt, uid, ts
             fp = open('data/'+str(date), 'w')
-            fp.write(json.dumps(stats))
+            for pid, stat in stats.iteritems():
+                line = str(pid)+'\t'+'\t'.join([str(x) for x in stat])+'\n'
+                fp.write(line)
             fp.close()
 
             for uid, pstat in careInfo2.iteritems():
@@ -1272,12 +1311,132 @@ class PostUniform(Editor):
                     if stat[0] > 0:
                         careInfo2[uid]['stat'][2] += stat[0]
                         careInfo2[uid]['stat'][3] += 1
+                    careInfo2[uid]['stat'][5] += stat[3]#expose position
             fp = open('data/care-'+str(date), 'w')
             for uid, pstat in careInfo2.iteritems():
-                fp.write(str(uid) + '\t' + '\t'.join([str(x) for x in pstat['stat']]) + '\n')
+                fp.write(str(uid) + '\t' + '\t'.join([str(x) for x in pstat['stat'][:6]]) + '\t' + pstat['stat'][-1])
             fp.close()
+
             if date == yday:
                 break
             date += datetime.timedelta(days=1)
+        fp = open('data/postExposeTime.csv', 'w')
+        for days, count in postExposeTime.iteritems():
+            fp.write('%s, %s\n'%(days, count))
+        fp.close()
+        fp = open('data/postClickTime.csv', 'w')
+        for days, count in postClickTime.iteritems():
+            fp.write('%s, %s\n'%(days, count))
+        fp.close()
 
+        postExposeCountStats = {}
+        for pid, count in postExposeCount.iteritems():
+            if count not in postExposeCountStats:
+                postExposeCountStats[count] = 0
+            postExposeCountStats[count] += 1
+        fp = open('data/postExposeCount.csv', 'w')
+        for count, num in postExposeCountStats.iteritems():
+            fp.write('%s, %s\n'%(count, num))
+        fp.close()
+
+        postClickCountStats = {}
+        for pid, count in postClickCount.iteritems():
+            if count not in postClickCountStats:
+                postClickCountStats[count] = 0
+            postClickCountStats[count] += 1
+        fp = open('data/postClickCount.csv', 'w')
+        for count, num in postClickCountStats.iteritems():
+            fp.write('%s, %s\n'%(count, num))
+        fp.close()
+
+        return []
+
+class ClickPos(Editor):
+    def loadData(self):
+        date = datetime.date.today() - datetime.timedelta(days=1)
+        rankInfo = {}
+        clickPos = {}
+        related = {}
+        #click data
+        path = '/opt/parsed_data/uv/%s/1/'%date.strftime('%Y%m%d')
+        processed = 0
+        for name in os.listdir(path):
+            if name[:4] != 'part':
+                continue
+            for line in open(path+name):
+                print 'process %s'%processed
+                processed += 1
+                li = line[3:-2].split("',")
+                pid = int(li[0])
+                try:#calc relateSet
+                    if pid not in rankInfo:
+                        mdl = Koubei.select().where(Koubei.subject_id==pid).get()
+                        itemId = mdl.item_id
+                    else:
+                        itemId = rankInfo[pid][1]
+                    if itemId in related:
+                        relateSet = related[itemId]
+                    else:
+                        relateSet = set([itemId])
+                        related[itemId] = relateSet
+                        mdl = RelateSku.select().where(RelateSku.id==itemId).get()
+                        flag = mdl.relate_flag
+                        if flag:
+                            mdls = RelateSku.select().where(RelateSku.relate_flag==flag)
+                            for mdl in mdls:
+                                relateSet.add(mdl.id)
+                                related[mdl.id] = relateSet
+                except:
+                    continue
+
+                #get rank info from koubei
+                if pid not in rankInfo:
+                    mdls = Koubei.select().where((Koubei.item_id<<list(relateSet))&(Koubei.status==2)&(Koubei.subject_id>0)&(Koubei.auto_evaluate==0)).order_by(Koubei.is_bottom, Koubei.auto_evaluate, Koubei.rank_score.desc(), Koubei.score.desc(), Koubei.created_time.desc())
+                    for i, mdl in enumerate(mdls):
+                        rankInfo[mdl.subject_id] = (i, mdl.item_id)
+
+                if pid not in rankInfo:#post gone
+                    continue
+                rank = rankInfo[pid][0]
+                itemId = min(relateSet)
+                if itemId not in clickPos:
+                    clickPos[itemId] = {}
+                if rank not in clickPos[itemId]:
+                    clickPos[itemId][rank] = 0
+                clickPos[itemId][rank] += int(li[1])
+
+        cpStats = {}
+        for itemId, cp in clickPos.iteritems():
+            cpinfo = sorted(cp.iteritems(), key=lambda x:x[0])
+            num = 0
+            positive = 0
+            negative = 0
+            for rank, count in cpinfo:
+                if rank not in cpStats:
+                    cpStats[rank] = 0
+                cpStats[rank] += count
+                if rank > 9:
+                    continue
+                if num > 0:
+                    diff = cpinfo[num-1][1] - count
+                    if diff > 0:
+                        positive += diff
+                    else:
+                        negative += diff
+                num += 1
+            clickPos[itemId]['positive'] = positive
+            clickPos[itemId]['negative'] = negative
+        fp = open('data/click-position-'+str(date), 'w')
+        for rank, count in cpStats.iteritems():
+            fp.write('%s\t%s\n'%(rank, count))
+        fp.close()
+
+        fp = open('data/sku-click-position-'+str(date), 'w')
+        for itemId, cp in clickPos.iteritems():
+            fp.write('%s\t%s\t%s\n'%(itemId, cp['positive'], cp['negative']))
+        fp.close()
+
+        fp = open('data/rankInfo-'+str(date), 'w')
+        fp.write(json.dumps(rankInfo))
+        fp.close()
         return []
