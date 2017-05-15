@@ -3,6 +3,7 @@
 from constant import *
 from playhouse.csv_loader import *
 from tools import *
+from redis_util import *
 
 class Editor:
     srcModel = None
@@ -750,10 +751,10 @@ class Image2Server(Editor):
 
         logging.info('%s/%s in %s.'%(str(count), len(pics), model.id))
         model.srvPics = json.dumps(srvLinks)
-        if len(srvLinks) == validCount:
-            model.status = UPLOADED_STATUS
-        elif count['empty'] > 0:
+        if count['empty'] > 0:
             model.status = INIT_STATUS
+        elif len(srvLinks) > 0:
+            model.status = UPLOADED_STATUS
         model.save()
         return 1
 
@@ -1013,8 +1014,14 @@ class SimPost(Editor):
         if self.fp == None:
             yday = datetime.date.today() - datetime.timedelta(days=1)
             self.dupDate = yday.strftime('%Y%m%d')
+            path = '/opt/article_in_mia/deduped/%s'%self.dupDate
+            if os.path.exists(path):
+                return []
             filename = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%self.dupDate
-            self.fp = open(filename)
+            try:
+                self.fp = open(filename)
+            except:
+                return []
             self.startDate = str(datetime.date.today() - datetime.timedelta(days=300))
 
         res = []
@@ -1107,7 +1114,6 @@ class SimPost(Editor):
             sku = post[10]
             typ = post[2]
         except:
-            pdb.set_trace()
             return 0
         if date < self.startDate:
             return 0
@@ -1154,6 +1160,8 @@ class SimPost(Editor):
         fp = open(name2, 'w')
         fp.write(json.dumps(discard))
         fp.close()
+        os.system('cp %s %s'%(name1, path[:-9]))
+        os.system('cp %s %s'%(name2, path[:-9]))
 
 import redis
 import copy
@@ -1440,3 +1448,65 @@ class ClickPos(Editor):
         fp.write(json.dumps(rankInfo))
         fp.close()
         return []
+
+import math
+class KoubeiScore(Editor):
+    def loadData(self):
+        clickDays = 7
+        date = datetime.date.today() - datetime.timedelta(days=1)
+        path = '/opt/parsed_data/uv/%s/%s/'%(date.strftime('%Y%m%d'), clickDays)
+        #load click data
+        clickCount = {}
+        for name in os.listdir(path):
+            if name[:4] != 'part':
+                continue
+            for line in open(path+name):
+                li = line[3:-2].split("',")
+                pid = int(li[0])
+                clickCount[pid] = int(li[1])
+        #load item data
+        pdb.set_trace()
+        pid = 0
+        relateSku = {}
+        while True:
+            mdls = RelateSku.select().where(RelateSku.id>pid).order_by(RelateSku.id).limit(1000)
+            if len(mdls) == 0:
+                break
+            for mdl in mdls:
+                pid = mdl.id
+                flag = mdl.relate_flag
+                if flag:
+                    if flag in relateSku:
+                        relateSku[flag].append(pid)
+                    else:
+                        relateSku[flag] = [pid]
+                else:
+                    relateSku[pid] = [pid]
+        #calc score
+        pdb.set_trace()
+        redis = RedisUtil()
+        for flag, items in relateSku.iteritems():
+            mdls = Koubei.select().where((Koubei.item_id<<items)&(Koubei.status==2)&(Koubei.subject_id>0)&(Koubei.auto_evaluate==0))
+            rankScore = {}
+            for mdl in mdls:
+                pid = mdl.subject_id
+                if mdl.score == 0:
+                    uscore = 5
+                else:
+                    uscore = mdl.score
+                mscore = mdl.machine_score
+                sub = Subject.select().where(Subject.id==pid).get()
+                text = sub.text
+                pics = sub.image_url.split('#')
+                ctime = sub.created
+                if pid in clickCount:
+                    click = clickCount[pid]
+                else:
+                    click = 1
+                score = (uscore+mscore-2)*5+len(pics)*3+min(len(text)/20,10)+round(math.log(click),2)
+                rankScore[pid] = score
+            ranked = sorted(rankScore.iteritems(), key=lambda x:x[1])
+            
+            #save into redis
+            key = 'koubei:rank_score:%s'%flag
+            redis.set_obj(key, ranked)

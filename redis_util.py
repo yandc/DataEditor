@@ -1,6 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 import redis
+from rediscluster import client
 import datetime
 import json
 
@@ -8,13 +9,17 @@ ENV_TYPE = getEnvType()
 
 class RedisUtil:
     def __init__(self):
-        if ENV_TYPE == ENV_ONLINE:
-            host = '192.168.1.12'
-            port = 6380
-        else:
-            host = '10.251.163.113'
-            port = 6380
-        self.__inst = redis.StrictRedis(host=host, port=port, db=0)
+        redis_nodes = [
+            {'host': '10.1.106.26', 'port': 7000},
+            {'host': '10.1.106.26', 'port': 7001},
+            {'host': '10.1.106.26', 'port': 7002},
+            {'host': '10.1.106.38', 'port': 7000},
+            {'host': '10.1.106.38', 'port': 7001},
+            {'host': '10.1.106.38', 'port': 7002},
+        ]
+        pool = client.ClusterConnectionPool(startup_nodes=redis_nodes)
+        self.__inst = client.StrictRedisCluster(connection_pool=pool)
+        #self.__inst = redis.StrictRedis(host=host, port=port, db=0)
 
     def get_number(self, key):
         key = str(key)

@@ -12,6 +12,7 @@ PostStats = getOrmModel('material', 'poststats')
 PostInfo = getOrmModel('material', 'postinfo')
 RelateSku = getOrmModel('mia', 'item')
 Koubei = getOrmModel('mia_group', 'koubei')
+Subject = getOrmModel('mia_group', 'group_subjects')
 BaseProject = None
 BaseInfo = None
 BaseIvent = None
