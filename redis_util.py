@@ -5,7 +5,6 @@ from rediscluster import client
 import datetime
 import json
 
-ENV_TYPE = getEnvType()
 
 class RedisUtil:
     def __init__(self):

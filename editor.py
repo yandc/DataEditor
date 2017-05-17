@@ -1138,6 +1138,8 @@ class SimPost(Editor):
         return 1
 
     def finish(self):
+        if not self.index:
+            return
         path = '/opt/article_in_mia/deduped/%s'%self.dupDate
         if not os.path.exists(path):
             os.mkdir(path)
@@ -1149,7 +1151,6 @@ class SimPost(Editor):
         for post in posts:
             fp.write('\t'.join([str(x) for x in [post[0], post[3], post[6], post[7], post[8]]]) + '\n')
         fp.close()
-        
         matchid = 0
         discard = []
         for post in posts:
@@ -1244,7 +1245,10 @@ class PostUniform(Editor):
                             continue
                         exposePos = 0
                         for postid in ele.split(','):
-                            pid = int(postid)
+                            try:
+                                pid = int(postid)
+                            except:
+                                continue
                             if pid not in stats:
                                 stats[pid] = [0, 0, 0, 0]
                             stats[pid][1] += 1
@@ -1268,7 +1272,10 @@ class PostUniform(Editor):
                     continue
                 for line in open(path+name):
                     li = line[3:-2].split("',")
-                    pid = int(li[0])
+                    try:
+                        pid = int(li[0])
+                    except:
+                        continue
                     if pid not in stats:
                         stats[pid] = [0, 0, 0, 0]
                     stats[pid][0] += int(li[1])
@@ -1361,13 +1368,14 @@ class PostUniform(Editor):
 
 class ClickPos(Editor):
     def loadData(self):
-        date = datetime.date.today() - datetime.timedelta(days=1)
+        date = datetime.date.today() - datetime.timedelta(days=6)
         rankInfo = {}
         clickPos = {}
         related = {}
         #click data
         path = '/opt/parsed_data/uv/%s/1/'%date.strftime('%Y%m%d')
         processed = 0
+        rds = RedisUtil()
         for name in os.listdir(path):
             if name[:4] != 'part':
                 continue
@@ -1399,10 +1407,22 @@ class ClickPos(Editor):
 
                 #get rank info from koubei
                 if pid not in rankInfo:
-                    mdls = Koubei.select().where((Koubei.item_id<<list(relateSet))&(Koubei.status==2)&(Koubei.subject_id>0)&(Koubei.auto_evaluate==0)).order_by(Koubei.is_bottom, Koubei.auto_evaluate, Koubei.rank_score.desc(), Koubei.score.desc(), Koubei.created_time.desc())
-                    for i, mdl in enumerate(mdls):
-                        rankInfo[mdl.subject_id] = (i, mdl.item_id)
-
+                    #mdls = Koubei.select().where((Koubei.item_id<<list(relateSet))&(Koubei.status==2)&(Koubei.subject_id>0)&(Koubei.auto_evaluate==0)).order_by(Koubei.is_bottom, Koubei.auto_evaluate, Koubei.rank_score.desc(), Koubei.score.desc(), Koubei.created_time.desc())
+                    #for i, mdl in enumerate(mdls):
+                    #    rankInfo[mdl.subject_id] = (i, mdl.item_id)
+                    result = []
+                    for itemId in relateSet:
+                        key = 'koubei:rank_score:%s'%itemId
+                        rs = rds.get_obj(key)
+                        if not rs:
+                            continue
+                        result += rs
+                        for pid, score in rs:
+                            rankInfo[pid] = [0, itemId]
+                    ranked = sorted(result, key=lambda x:x[1], reverse=True)
+                    for i, rank in enumerate(ranked):
+                        rankInfo[rank[0]][0] = i
+                        
                 if pid not in rankInfo:#post gone
                     continue
                 rank = rankInfo[pid][0]
@@ -1451,62 +1471,103 @@ class ClickPos(Editor):
 
 import math
 class KoubeiScore(Editor):
-    def loadData(self):
-        clickDays = 7
+    clickCount = {}
+    firstLoad = True
+    def __init__(self, **kwargs):
+        Editor.__init__(self, **kwargs)
+        self.redis = RedisUtil()
+        logging.info('load click data...')
         date = datetime.date.today() - datetime.timedelta(days=1)
+        clickDays = 7
         path = '/opt/parsed_data/uv/%s/%s/'%(date.strftime('%Y%m%d'), clickDays)
-        #load click data
-        clickCount = {}
-        for name in os.listdir(path):
-            if name[:4] != 'part':
-                continue
-            for line in open(path+name):
-                li = line[3:-2].split("',")
-                pid = int(li[0])
-                clickCount[pid] = int(li[1])
-        #load item data
-        pdb.set_trace()
-        pid = 0
-        relateSku = {}
-        while True:
-            mdls = RelateSku.select().where(RelateSku.id>pid).order_by(RelateSku.id).limit(1000)
-            if len(mdls) == 0:
-                break
-            for mdl in mdls:
-                pid = mdl.id
-                flag = mdl.relate_flag
-                if flag:
-                    if flag in relateSku:
-                        relateSku[flag].append(pid)
-                    else:
-                        relateSku[flag] = [pid]
-                else:
-                    relateSku[pid] = [pid]
-        #calc score
-        pdb.set_trace()
-        redis = RedisUtil()
-        for flag, items in relateSku.iteritems():
-            mdls = Koubei.select().where((Koubei.item_id<<items)&(Koubei.status==2)&(Koubei.subject_id>0)&(Koubei.auto_evaluate==0))
-            rankScore = {}
-            for mdl in mdls:
-                pid = mdl.subject_id
-                if mdl.score == 0:
-                    uscore = 5
-                else:
-                    uscore = mdl.score
-                mscore = mdl.machine_score
-                sub = Subject.select().where(Subject.id==pid).get()
-                text = sub.text
-                pics = sub.image_url.split('#')
-                ctime = sub.created
-                if pid in clickCount:
-                    click = clickCount[pid]
-                else:
-                    click = 1
-                score = (uscore+mscore-2)*5+len(pics)*3+min(len(text)/20,10)+round(math.log(click),2)
-                rankScore[pid] = score
-            ranked = sorted(rankScore.iteritems(), key=lambda x:x[1])
+        if os.path.exists(path):
+            for name in os.listdir(path):
+                if name[:4] != 'part':
+                    continue
+                for line in open(path+name):
+                    li = line[3:-2].split("',")
+                    try:
+                        pid = int(li[0])
+                        self.clickCount[pid] = int(li[1])
+                    except:
+                        continue
+                
+    def loadData(self):
+        if not self.clickCount:
+            return []
+        if self.firstLoad:
+            if self.checkPoint==str(datetime.date.today()):
+                return []
+            self.checkPoint = 0
+            self.firstLoad = False
             
-            #save into redis
-            key = 'koubei:rank_score:%s'%flag
-            redis.set_obj(key, ranked)
+        return RelateSku.select().where(RelateSku.id>self.checkPoint).order_by(RelateSku.id).limit(self.batchSize)
+
+    def getScore(self, mdl, sub):
+        pid = mdl.subject_id
+        if mdl.auto_evaluate == 1:
+            return 10
+        if not mdl.score:
+            uscore = 5
+        else:
+            uscore = int(mdl.score)
+        if not mdl.machine_score:
+            mscore = 3
+        else:
+            mscore = int(mdl.machine_score)
+        text = sub.text
+        pics = sub.image_url.split('#')
+        ctime = sub.created
+        if pid in self.clickCount:
+            click = self.clickCount[pid]
+        else:
+            click = 1
+        score = (uscore+mscore-2)*5+len(pics)*3+min(len(text)/20,10)+round(math.log(click)-0.25*(datetime.date.today()-ctime.date()).days/30, 2)
+        return score
+
+    def calcRanked(self, itemId, mdls, incFlag=False):
+        subjects = Subject.select().where(Subject.id<<[x.subject_id for x in mdls])
+        subDict = {}
+        for sub in subjects:
+            subDict[sub.id] = sub
+        rankScore = {}
+        key = 'koubei:rank_score:%s'%itemId
+        if incFlag:
+            ranked = self.redis.get_obj(key)
+            if ranked:
+                for pid, score in ranked:
+                    rankScore[pid] = score
+        for mdl in mdls:
+            pid = mdl.subject_id
+            score = self.getScore(mdl, subDict[pid])
+            rankScore[pid] = score
+            
+        if len(rankScore) == 0:
+            return 0
+        ranked = sorted(rankScore.iteritems(), key=lambda x:x[1], reverse=True)
+        #save into redis
+        self.redis.set_obj(key, ranked)
+        return 1
+    
+    def edit(self, model):
+        mdls = Koubei.select().where((Koubei.item_id==model.id)&(Koubei.status==2)&(Koubei.subject_id>0)).order_by(Koubei.created_time.desc())
+        return self.calcRanked(model.id, mdls)
+
+    def finish(self):
+        self.checkPoint = str(datetime.date.today())
+
+class IncKoubeiScore(KoubeiScore):
+    IncKoubei = {}
+    def loadData(self):
+        return Koubei.select().where((Koubei.id>self.checkPoint)&(Koubei.status==2)&(Koubei.subject_id>0)).order_by(Koubei.id).limit(self.batchSize)
+    
+    def edit(self, model):
+        itemId = model.item_id
+        if itemId not in self.IncKoubei:
+            self.IncKoubei[itemId] = []
+        self.IncKoubei[itemId].append(model)
+        return 1
+
+    def finish(self):
+        for itemId, mdls in self.IncKoubei.iteritems():
+            self.calcRanked(itemId, mdls, True)
