@@ -1510,14 +1510,14 @@ class KoubeiScore(Editor):
 
     def getScore(self, mdl, sub):
         pid = mdl.subject_id
-        if int(mdl.auto_evaluate) == 1:
-            return 10
+        if mdl.auto_evaluate and int(mdl.auto_evaluate) == 1:
+            return 15
         if not mdl.score:
             uscore = 5
         else:
             uscore = int(mdl.score)
         if not mdl.machine_score:
-            mscore = 3
+            mscore = 2
         else:
             mscore = int(mdl.machine_score)
         text = sub.text
