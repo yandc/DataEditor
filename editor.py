@@ -765,11 +765,9 @@ class PostImport(Editor):
         
     def loadData(self):
         srcModel = self.srcModel
-        #return srcModel.select().where(((srcModel.status==UPLOADED_STATUS) | (srcModel.status==BROKEN_STATUS)) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
-        return srcModel.select().where(srcModel.id == 537897)
+        return srcModel.select().where(((srcModel.status==UPLOADED_STATUS) | (srcModel.status==BROKEN_STATUS)) & (srcModel.id>self.checkPoint)).order_by(srcModel.id).limit(self.batchSize)
 
     def edit(self, model):
-        pdb.set_trace()
         try:
             text = '\n'.join(json.loads(model.text))
         except Exception, e:
@@ -777,7 +775,8 @@ class PostImport(Editor):
         try:
             title = json.loads(model.title)
         except:
-            title = model.title
+            if title and title[:3] == '"\\u':
+                title = model.title
 
         info = {
             'class':'Robot',
@@ -1166,16 +1165,78 @@ class SimPost(Editor):
 
 import redis
 import copy
+class DailyExpose(Editor):
+    def loadData(self):
+        rds = redis.StrictRedis(host = '10.1.60.190')
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        date = yday
+        while True:
+            dateStr = date.strftime('%Y%m%d')
+            path = '/opt/parsed_data/did_article/%s/'%dateStr
+            if not os.path.exists(path):
+                os.mkdir(path)
+                os.system('/usr/local/hadoop/bin/hadoop fs -get  /search/userprofile/%s/article/part* %s'%(dateStr, path))
+            fpDict = {}
+            for fname in os.listdir(path):
+                logging.info('Process %s'%(path+fname))
+                for line in open(path+fname):
+                    idx = line.find("',")
+                    key = line[3:idx]
+                    lkey = 'session_%s'%(key)
+                    dkey = 'session_detail_%s_%s'%(dateStr, key)
+                    #expose data of list page
+                    for ele in rds.lrange(lkey, start=0, end=-1):
+                        if not ele:
+                            continue
+                        eleli = ele.split(',')
+                        ts = int(eleli[-1])
+                        if ts < 0:
+                            dt = datetime.datetime.fromtimestamp(abs(ts))
+                            if dt.date() >= date:
+                                dateStr = dt.date().strftime('%Y%m%d')
+                                if dateStr not in fpDict:
+                                    _path = 'data/expose_%s'%dateStr
+                                    fpDict[dateStr] = open(_path, 'w')
+                                fpDict[dateStr].write('%s:%s\n'%(key, ele))
+                            else:
+                                break
+                        else:
+                            break
+                    #expost data of detail page
+                    for ele in rds.lrange(dkey, start=0, end=-1):
+                        if not ele:
+                            continue
+                        eleli = ele.split(',')
+                        ts = int(eleli[-1])
+                        if ts < 0:
+                            dt = datetime.datetime.fromtimestamp(abs(ts))
+                            if dt.date() >= date:
+                                dateStr = dt.date().strftime('%Y%m%d')
+                                if dateStr not in fpDict:
+                                    _path = 'data/expose_%s'%dateStr
+                                    fpDict[dateStr] = open(_path, 'w')
+                                fpDict[dateStr].write('%s:%s\n'%(key, ele))
+                            else:
+                                break
+                        else:
+                            break
+            for dateStr, fp in fpDict.iteritems():
+                fp.close()
+            if date == yday:
+                break
+            date += datetime.timedelta(days=1)
+        return []
+
 class PostUniform(Editor):
     def loadData(self):
         rds = redis.StrictRedis(host = '10.1.60.190')
-
         #load care info
         careInfo = {}
         fname = 'data/care.txt'
         for line in open(fname):
             li = line.split(',')
-            careInfo[int(li[0])] = {'stat':[0, 0, 0, 0, 0, 0, li[1].decode().encode('gbk')]}
+            careInfo[int(li[0])] = {'stat':[0, 0, 0, 0, 0, li[1].decode().encode('gbk')]}
 
         #load post info
         pinfo = {}
@@ -1196,74 +1257,36 @@ class PostUniform(Editor):
                 careInfo[uid]['stat'][4] += 1
         fp.close()
 
-        postExposeCount = {}
         postExposeTime = {}
-        postClickCount = {}
         postClickTime = {}
         #load post info
         while True:
             #ready data
-            path = '/opt/parsed_data/did_article/%s/'%date.strftime('%Y%m%d')
-            if not os.path.exists(path):
-                os.mkdir(path)
-                os.system('/usr/local/hadoop/bin/hadoop fs -get  /search/userprofile/%s/article/part* %s'%(date.strftime('%Y%m%d'), path))
             careInfo2 = copy.deepcopy(careInfo)
             stats = {}
             #expose data
-            for fname in os.listdir(path):
-                for line in open(path+fname):
-                    idx = line.find("',")
-                    key = line[3:idx]
-                    lkey = 'sessionid_%s_%s'%(key, date.strftime('%Y%m%d'))
-                    dkey = 'sessionid_detail_%s_%s'%(date.strftime('%Y%m%d'), key)
-                    #expose data of list page
-                    for ele in rds.lrange(lkey, start=0, end=-1):
-                        if not ele:
-                            continue
-                        exposePos = 0
-                        for postid in ele.split(','):
-                            pid = int(postid)
-                            if pid not in stats:
-                                stats[pid] = [0, 0, 0, 0]
-                            stats[pid][1] += 1
-                            stats[pid][3] += exposePos
-                            exposePos += 1
-                            if pid not in postExposeCount:
-                                postExposeCount[pid] = 0
-                            postExposeCount[pid] += 1
-                            if pid not in pinfo:
-                                continue
-                            cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
-                            diff = date - cdate
-                            if diff.days not in postExposeTime:
-                                postExposeTime[diff.days] = 0
-                            postExposeTime[diff.days] += 1
-
-                    #expost data of detail page
-                    for ele in rds.lrange(dkey, start=0, end=-1):
-                        if not ele:
-                            continue
-                        exposePos = 0
-                        for postid in ele.split(','):
-                            try:
-                                pid = int(postid)
-                            except:
-                                continue
-                            if pid not in stats:
-                                stats[pid] = [0, 0, 0, 0]
-                            stats[pid][1] += 1
-                            stats[pid][3] += exposePos
-                            exposePos += 1
-                            if pid not in postExposeCount:
-                                postExposeCount[pid] = 0
-                            postExposeCount[pid] += 1
-                            if pid not in pinfo:
-                                continue
-                            cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
-                            diff = date - cdate
-                            if diff.days not in postExposeTime:
-                                postExposeTime[diff.days] = 0
-                            postExposeTime[diff.days] += 1
+            dateStr = date.strftime('%Y%m%d')
+            path = 'data/expose_%s'%dateStr
+            for line in open(path):
+                li = line.split(':')
+                dvcId = li[0]
+                ele = li[1][:-1]
+                for postid in ele.split(',')[:-1]:
+                    try:
+                        pid = int(postid)
+                    except:
+                        continue
+                    if pid not in stats:
+                        stats[pid] = [0, 0, 0]
+                    stats[pid][1] += 1
+                    
+                    if pid not in pinfo:
+                        continue
+                    cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
+                    diff = date - cdate
+                    if diff.days not in postExposeTime:
+                        postExposeTime[diff.days] = 0
+                    postExposeTime[diff.days] += 1
 
             #click data
             path = '/opt/parsed_data/uv/%s/1/'%date.strftime('%Y%m%d')
@@ -1277,11 +1300,8 @@ class PostUniform(Editor):
                     except:
                         continue
                     if pid not in stats:
-                        stats[pid] = [0, 0, 0, 0]
+                        stats[pid] = [0, 0, 0]
                     stats[pid][0] += int(li[1])
-                    if pid not in postClickCount:
-                        postClickCount[pid] = 0
-                    postClickCount[pid] += int(li[1])
                     if pid not in pinfo:
                         continue
                     cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
@@ -1326,10 +1346,9 @@ class PostUniform(Editor):
                     if stat[0] > 0:
                         careInfo2[uid]['stat'][2] += stat[0]
                         careInfo2[uid]['stat'][3] += 1
-                    careInfo2[uid]['stat'][5] += stat[3]#expose position
             fp = open('data/care-'+str(date), 'w')
             for uid, pstat in careInfo2.iteritems():
-                fp.write(str(uid) + '\t' + '\t'.join([str(x) for x in pstat['stat'][:6]]) + '\t' + pstat['stat'][-1])
+                fp.write(str(uid) + '\t' + '\t'.join([str(x) for x in pstat['stat'][:5]]) + '\t' + pstat['stat'][-1])
             fp.close()
 
             if date == yday:
@@ -1342,26 +1361,6 @@ class PostUniform(Editor):
         fp = open('data/postClickTime.csv', 'w')
         for days, count in postClickTime.iteritems():
             fp.write('%s, %s\n'%(days, count))
-        fp.close()
-
-        postExposeCountStats = {}
-        for pid, count in postExposeCount.iteritems():
-            if count not in postExposeCountStats:
-                postExposeCountStats[count] = 0
-            postExposeCountStats[count] += 1
-        fp = open('data/postExposeCount.csv', 'w')
-        for count, num in postExposeCountStats.iteritems():
-            fp.write('%s, %s\n'%(count, num))
-        fp.close()
-
-        postClickCountStats = {}
-        for pid, count in postClickCount.iteritems():
-            if count not in postClickCountStats:
-                postClickCountStats[count] = 0
-            postClickCountStats[count] += 1
-        fp = open('data/postClickCount.csv', 'w')
-        for count, num in postClickCountStats.iteritems():
-            fp.write('%s, %s\n'%(count, num))
         fp.close()
 
         return []
@@ -1475,7 +1474,13 @@ class KoubeiScore(Editor):
     firstLoad = True
     def __init__(self, **kwargs):
         Editor.__init__(self, **kwargs)
-        self.redis = RedisUtil()
+        if 'env' in kwargs:
+            self.redis = RedisUtil(kwargs['env'])
+        else:
+            self.redis = RedisUtil()
+        self.loadClickData()
+        
+    def loadClickData(self):
         logging.info('load click data...')
         date = datetime.date.today() - datetime.timedelta(days=1)
         clickDays = 7
@@ -1496,7 +1501,7 @@ class KoubeiScore(Editor):
         if not self.clickCount:
             return []
         if self.firstLoad:
-            if self.checkPoint==str(datetime.date.today()):
+            if self.checkPoint==int(datetime.date.today().strftime('%Y%m%d')):
                 return []
             self.checkPoint = 0
             self.firstLoad = False
@@ -1505,7 +1510,7 @@ class KoubeiScore(Editor):
 
     def getScore(self, mdl, sub):
         pid = mdl.subject_id
-        if mdl.auto_evaluate == 1:
+        if int(mdl.auto_evaluate) == 1:
             return 10
         if not mdl.score:
             uscore = 5
@@ -1535,13 +1540,14 @@ class KoubeiScore(Editor):
         if incFlag:
             ranked = self.redis.get_obj(key)
             if ranked:
-                for pid, score in ranked:
-                    rankScore[pid] = score
+                for kbid, score in ranked:
+                    rankScore[kbid] = score
         for mdl in mdls:
             pid = mdl.subject_id
+            kbid = mdl.id
             score = self.getScore(mdl, subDict[pid])
-            rankScore[pid] = score
-            
+            rankScore[kbid] = score
+
         if len(rankScore) == 0:
             return 0
         ranked = sorted(rankScore.iteritems(), key=lambda x:x[1], reverse=True)
@@ -1554,10 +1560,13 @@ class KoubeiScore(Editor):
         return self.calcRanked(model.id, mdls)
 
     def finish(self):
-        self.checkPoint = str(datetime.date.today())
+        self.checkPoint = int(datetime.date.today().strftime('%Y%m%d'))
 
 class IncKoubeiScore(KoubeiScore):
     IncKoubei = {}
+    def loadClickData(self):
+        pass
+    
     def loadData(self):
         return Koubei.select().where((Koubei.id>self.checkPoint)&(Koubei.status==2)&(Koubei.subject_id>0)).order_by(Koubei.id).limit(self.batchSize)
     
@@ -1571,3 +1580,45 @@ class IncKoubeiScore(KoubeiScore):
     def finish(self):
         for itemId, mdls in self.IncKoubei.iteritems():
             self.calcRanked(itemId, mdls, True)
+
+from bucket import *
+class UserFeature(Editor):
+    def loadData(self):
+        dvcPost = {}
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        date = today - datetime.timedelta(days=7)
+
+        targetPath = '/opt/parsed_data/bucket/device-post-bucket.%s'%yday.strftime('%Y%m%d')
+        if os.path.exists(targetPath):
+            return []
+        accCount = 0
+        while True:
+            path = 'data/access.log%s'%date.strftime('%Y%m%d')
+            os.system('/usr/local/hadoop/bin/hadoop fs -get /search/parsed_data/%s/article/part* %s'%(date.strftime('%Y%m%d'), path))
+            if not os.path.exists(path):
+                return []
+            for line in open(path):
+                access = line.split(',')
+                dvcId = access[0][3:-1]
+                try:
+                    pid = int(access[4][3:-1])
+                except:
+                    continue
+                if dvcId not in dvcPost:
+                    dvcPost[dvcId] = set()
+                dvcPost[dvcId].add(pid)
+                accCount += 1
+            if date == yday:
+                break
+            date += datetime.timedelta(days=1)
+
+        dvcBkt = DeviceBucket()
+        bktCount = 0
+        for dvcId, pSet in dvcPost.iteritems():
+            bktCount += dvcBkt.put(dvcId.lower(), pSet)
+        logging.info('Access count: %s, bucket count: %s'%(accCount, bktCount))
+        dvcBkt.dump(targetPath)
+        os.system('cp %s %s'%(targetPath, '/opt/parsed_data/bucket/final_good_post.txt'))
+        return []
+

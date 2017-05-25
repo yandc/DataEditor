@@ -5,18 +5,27 @@ from rediscluster import client
 import datetime
 import json
 
-
 class RedisUtil:
-    def __init__(self):
-        redis_nodes = [
-            {'host': '10.1.106.26', 'port': 7000},
-            {'host': '10.1.106.26', 'port': 7001},
-            {'host': '10.1.106.26', 'port': 7002},
-            {'host': '10.1.106.38', 'port': 7000},
-            {'host': '10.1.106.38', 'port': 7001},
-            {'host': '10.1.106.38', 'port': 7002},
-        ]
-        pool = client.ClusterConnectionPool(startup_nodes=redis_nodes)
+    def __init__(self, env='test'):
+        nodes = {
+            'test':[
+                {'host': '10.1.106.26', 'port': 7000},
+                {'host': '10.1.106.26', 'port': 7001},
+                {'host': '10.1.106.26', 'port': 7002},
+                {'host': '10.1.106.38', 'port': 7000},
+                {'host': '10.1.106.38', 'port': 7001},
+                {'host': '10.1.106.38', 'port': 7002},
+            ],
+            'online':[
+                {'host': '10.1.117.110', 'port':7300},
+                {'host': '10.1.13.11', 'port':7302},
+                {'host': '10.1.13.11', 'port':7300},
+                {'host': '10.1.117.110', 'port':7301},
+                {'host': '10.1.13.11', 'port':7301},
+                {'host': '10.1.117.110', 'port':7302}
+            ]
+        }
+        pool = client.ClusterConnectionPool(startup_nodes=nodes[env])
         self.__inst = client.StrictRedisCluster(connection_pool=pool)
         #self.__inst = redis.StrictRedis(host=host, port=port, db=0)
 
