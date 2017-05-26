@@ -1521,7 +1521,10 @@ class KoubeiScore(Editor):
         else:
             mscore = int(mdl.machine_score)
         text = sub.text
-        pics = sub.image_url.split('#')
+        if sub.image_url:
+            pics = sub.image_url.split('#')
+        else:
+            pics = []
         ctime = sub.created
         if pid in self.clickCount:
             click = self.clickCount[pid]
@@ -1622,3 +1625,57 @@ class UserFeature(Editor):
         os.system('cp %s %s'%(targetPath, '/opt/parsed_data/bucket/final_good_post.txt'))
         return []
 
+class NopicSku(Editor):
+    skuDict = {}
+    def loadCheckPoint(self):
+        self.checkPoint = 0
+    def loadData(self):
+        return RelateSku.select(RelateSku.id, RelateSku.name, RelateSku.status, RelateSku.relate_flag, RelateSku.category_id_ng).where(RelateSku.id>self.checkPoint).order_by(RelateSku.id).limit(self.batchSize)
+
+    def edit(self, model):
+        if model.relate_flag:
+            skuKey = model.relate_flag
+        else:
+            skuKey = model.id
+        if skuKey not in self.skuDict:
+            #skuId, total, nodefault, haspic, name, catgy
+            self.skuDict[skuKey] = [0, 0, 0, 0, '', '']
+            
+        value = self.skuDict[skuKey]
+        mdls = Koubei.select(Koubei.id, Koubei.subject_id, Koubei.auto_evaluate).where((Koubei.item_id==model.id)&(Koubei.status==2)&(Koubei.subject_id>0)).order_by(Koubei.created_time.desc())
+        
+        for mdl in mdls:
+            if value[0] == 0 and model.status and int(model.status) == 1:
+                value[0] = model.id
+                cid = model.category_id_ng
+                value[4] = model.name
+                try:
+                    cmdl = ItemCatgy.select().where(ItemCatgy.id==cid).get()
+                    catgy = cmdl.name.split('/')[0]
+                    value[5] = catgy
+                except:
+                    pass
+            value[1] += 1
+            if not mdl.auto_evaluate or int(mdl.auto_evaluate) == 0:
+                value[2] += 1
+        if len(mdls):
+            subjects = Subject.select(Subject.id, Subject.image_url).where(Subject.id<<[x.subject_id for x in mdls])
+            for sub in subjects:
+                if sub.image_url:
+                    pics = sub.image_url.split('#')
+                    if len(pics) > 0:
+                        value[3] += 1
+        return 1
+                
+    def finish(self):
+        path = 'data/sku-koubei-count-%s.csv'%datetime.date.today().strftime('%Y%m%d')
+        fp = open(path, 'w')
+        for skuKey, value in self.skuDict.iteritems():
+            if value[0] == 0:
+                continue
+            if value[1] < 10 or value[2] < 10 or value[3] < 3:
+                fp.write('%s, %s, %s, %s, %s, %s\n'%(value[0], value[1], value[2], value[3], value[4], value[5]))
+        fp.close()
+
+
+    

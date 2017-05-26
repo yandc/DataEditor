@@ -13,6 +13,7 @@ PostInfo = getOrmModel('material', 'postinfo')
 RelateSku = getOrmModel('mia', 'item')
 Koubei = getOrmModel('mia_group', 'koubei')
 Subject = getOrmModel('mia_group', 'group_subjects')
+ItemCatgy = getOrmModel('mia', 'item_category_ng')
 BaseProject = None
 BaseInfo = None
 BaseIvent = None
