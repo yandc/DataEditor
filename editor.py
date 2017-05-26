@@ -1683,7 +1683,7 @@ class KbrankMonitor(Editor):
         msg = ''
         try:
             skuId = 1743917
-            pagesize = 9
+            pagesize = 10
             url = 'http://kbrank.rec.mia.com/koubei/get_koubei?skuIds=%s&page=0&pagesize=%s&debug=1'%(skuId, pagesize)
             resp = requests.get(url, timeout=3)
             res = json.loads(resp.content)
