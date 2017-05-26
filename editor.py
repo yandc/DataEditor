@@ -1677,5 +1677,33 @@ class NopicSku(Editor):
                 fp.write('%s, %s, %s, %s, %s, %s\n'%(value[0], value[1], value[2], value[3], value[4], value[5]))
         fp.close()
 
-
-    
+from email_util import *
+class KbrankMonitor(Editor):
+    def loadData(self):
+        msg = ''
+        try:
+            skuId = 1743917
+            pagesize = 9
+            url = 'http://kbrank.rec.mia.com/koubei/get_koubei?skuIds=%s&page=0&pagesize=%s&debug=1'%(skuId, pagesize)
+            resp = requests.get(url, timeout=3)
+            res = json.loads(resp.content)
+            if len(res['data']) == 10:
+                url = 'http://10.1.106.39:5512/koubei/get_koubei?skuIds=%s&page=0&pagesize=%s&debug=1'%(skuId, pagesize)
+                resp = requests.get(url, timeout=3)
+                res = json.loads(resp.content)
+                if len(res['data']) == 10:
+                    url = 'http://10.1.106.32:5512/koubei/get_koubei?skuIds=%s&page=0&pagesize=%s&debug=1'%(skuId, pagesize)
+                    resp = requests.get(url, timeout=3)
+                    res = json.loads(resp.content)
+                    if len(res['data']) == 10:
+                        return []
+        except Exception, e:
+            msg = '[Exception] %s'%str(e)
+        if not msg:
+            msg = 'Broken %s'%url
+        #send monite mail
+        title = '【口碑排序监控报警】'
+        addr = ['yandechen@mia.com']
+        mail = EmailUtil('exmail.qq.com', 'miasearch@mia.com', 'HelloJack123')
+        mail.sendEmail(addr, title, msg)
+        return []
