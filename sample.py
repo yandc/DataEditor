@@ -1,12 +1,13 @@
 import datetime
 import json
 import zlib
+import os
 import pdb
 
 def sampleRate():
     today = datetime.date.today()
     yday = today - datetime.timedelta(days=1)
-    date = today - datetime.timedelta(days=7)
+    date = yday
 
     stats = {}
     logPrefix = '[INFO] [2017-05-25 02:07:13] '
@@ -16,7 +17,11 @@ def sampleRate():
         uva = {}
         uvb = {}
         dateStr = date.strftime('%Y%m%d')
-        path = '/root/miagrouptools/pull_log/synclog/access.log%s'%dateStr
+        srcPath = '/root/miagrouptools/pull_log/synclog/access.log%s'%dateStr
+        path = 'detail-access.log%s'%(dateStr)
+        if not os.path.exists('detail-access.log%s'%dateStr):
+            os.system('grep getSingleSubjectById %s>%s'%(srcPath, path))
+
         print 'Process %s'%path
         for line in open(path):
             try:
@@ -41,9 +46,9 @@ def sampleRate():
 
         _uva = sum([len(y) for x, y in uva.iteritems()])
         _uvb = sum([len(y) for x, y in uvb.iteritems()])
-        path = 'koubei-abtest.%s'%dateStr
+        path = 'koubei-abtest.csv'
         fp = open(path, 'a')
-        fp.write('%s, %s, %s, %s, %s, %s, %s'%(dateStr, pva, pvb, _uva, _uvb, len(uva), len(uvb)))
+        fp.write('%s, %s, %s, %s, %s, %s, %s\n'%(dateStr, pva, pvb, _uva, _uvb, len(uva), len(uvb)))
         fp.close()
         
         if date == yday:
