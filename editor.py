@@ -1165,12 +1165,16 @@ class SimPost(Editor):
 
 import redis
 import copy
+#每日曝光抽取为文件
 class DailyExpose(Editor):
     def loadData(self):
         rds = redis.StrictRedis(host = '10.1.60.190')
         today = datetime.date.today()
         yday = today - datetime.timedelta(days=1)
+        if os.path.exists('/opt/parsed_data/did_article/%s/part-00000'%yday.strftime('%Y%m%d')):
+            return []
         date = yday
+        lenDict = {}
         while True:
             dateStr = date.strftime('%Y%m%d')
             path = '/opt/parsed_data/did_article/%s/'%dateStr
@@ -1186,6 +1190,8 @@ class DailyExpose(Editor):
                     lkey = 'session_%s'%(key)
                     dkey = 'session_detail_%s_%s'%(dateStr, key)
                     #expose data of list page
+                    if lkey not in lenDict:
+                        lenDict[lkey] = rds.llen(lkey)
                     for ele in rds.lrange(lkey, start=0, end=-1):
                         if not ele:
                             continue
@@ -1198,12 +1204,14 @@ class DailyExpose(Editor):
                                 if dateStr not in fpDict:
                                     _path = 'data/expose_%s'%dateStr
                                     fpDict[dateStr] = open(_path, 'w')
-                                fpDict[dateStr].write('%s:%s\n'%(key, ele))
+                                fpDict[dateStr].write('list:%s:%s\n'%(key, ele))
                             else:
                                 break
                         else:
                             break
                     #expost data of detail page
+                    if dkey not in lenDict:
+                        lenDict[dkey] = rds.llen(dkey)
                     for ele in rds.lrange(dkey, start=0, end=-1):
                         if not ele:
                             continue
@@ -1216,7 +1224,7 @@ class DailyExpose(Editor):
                                 if dateStr not in fpDict:
                                     _path = 'data/expose_%s'%dateStr
                                     fpDict[dateStr] = open(_path, 'w')
-                                fpDict[dateStr].write('%s:%s\n'%(key, ele))
+                                fpDict[dateStr].write('detail:%s:%s\n'%(key, ele))
                             else:
                                 break
                         else:
@@ -1226,8 +1234,14 @@ class DailyExpose(Editor):
             if date == yday:
                 break
             date += datetime.timedelta(days=1)
+        fp = open('/opt/parsed_data/ctr/expose_length_%s'%dateStr, 'w')
+        for key, llen in lenDict.iteritems():
+            if llen > 100:
+                fp.write('%s, %s\n'%(key, llen))
+        fp.close()
         return []
-
+    
+#曝光，点击，点击率，普通、达人比较
 class PostUniform(Editor):
     def loadData(self):
         rds = redis.StrictRedis(host = '10.1.60.190')
@@ -1242,6 +1256,11 @@ class PostUniform(Editor):
         pinfo = {}
         yday = datetime.date.today() - datetime.timedelta(days=1)
         date = yday
+        dateStr = yday.strftime('%Y%m%d')
+        if not os.path.exists('data/expose_%s'%dateStr):
+            return
+        if os.path.exists('data/care-%s'%str(yday)):
+            return []
         fname = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%yday.strftime('%Y%m%d')
         fp = open(fname)
         for line in fp:
@@ -1269,16 +1288,20 @@ class PostUniform(Editor):
             path = 'data/expose_%s'%dateStr
             for line in open(path):
                 li = line.split(':')
-                dvcId = li[0]
-                ele = li[1][:-1]
+                _type = li[0]
+                dvcId = li[1]
+                ele = li[2][:-1]
                 for postid in ele.split(',')[:-1]:
                     try:
                         pid = int(postid)
                     except:
                         continue
                     if pid not in stats:
-                        stats[pid] = [0, 0, 0]
-                    stats[pid][1] += 1
+                        stats[pid] = [0, 0, 0, 0, 0, 0]
+                    if _type == 'list':
+                        stats[pid][1] += 1
+                    elif _type == 'detail':
+                        stats[pid][4] += 1
                     
                     if pid not in pinfo:
                         continue
@@ -1289,19 +1312,26 @@ class PostUniform(Editor):
                     postExposeTime[diff.days] += 1
 
             #click data
-            path = '/opt/parsed_data/uv/%s/1/'%date.strftime('%Y%m%d')
+            path = 'data/click-%s/'%dateStr
+            if not os.path.exists(path):
+                os.mkdir(path)
+                os.system('hadoop fs -get /search/parsed_data/%s/article_uv_with_referer/part-* %s'%(dateStr, path))
             for name in os.listdir(path):
                 if name[:4] != 'part':
                     continue
                 for line in open(path+name):
                     li = line[3:-2].split("',")
                     try:
-                        pid = int(li[0])
+                        pid = int(li[0].split('_')[0])
+                        num = int(li[1])
                     except:
                         continue
                     if pid not in stats:
-                        stats[pid] = [0, 0, 0]
-                    stats[pid][0] += int(li[1])
+                        stats[pid] = [0, 0, 0, 0, 0, 0]
+                    if 'koubei_detail' in li[0]:
+                        stats[pid][3] += num
+                    elif 'group_home' in li[0]:
+                        stats[pid][0] += num
                     if pid not in pinfo:
                         continue
                     cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
@@ -1311,40 +1341,34 @@ class PostUniform(Editor):
                     postClickTime[diff.days] += 1
             
             #calc crt
-            count1 = 0
-            count2 = 0
             for pid, stat in stats.iteritems():
-                click = stat[0]
-                expose = stat[1]
-                if click > 0:
-                    count2 += 1
-                count1 += 1
-                stat[2] = float(click)/(expose+click)
+                stat[2] = calcCrt(stat[0], stat[1])
+                stat[5] = calcCrt(stat[3], stat[4])
                 if pid in pinfo:
                     uid = pinfo[pid][0]
-                    ts = pinfo[pid][1]
-                    stat += pinfo[pid]
                     if uid in careInfo2:
                         careInfo2[uid][pid] = stat
-            print '%s: %s/%s/%s'%(str(date), count2, count1, len(stats))
-            #pid: click, expose, crt, uid, ts
-            fp = open('data/'+str(date), 'w')
+            #pid: click1, expose1, crt1, click2, expose2, crt2
+            fp = open('/opt/parsed_data/ctr/'+str(date), 'w')
             for pid, stat in stats.iteritems():
                 line = str(pid)+'\t'+'\t'.join([str(x) for x in stat])+'\n'
                 fp.write(line)
             fp.close()
 
+            #calc tarento's click and expose
             for uid, pstat in careInfo2.iteritems():
                 for pid, stat in pstat.iteritems():
                     if pid == 'stat':
                         continue
                     if pid not in pinfo or pinfo[pid][0] != uid:
                         print pid
-                    if stat[1] > 0:
-                        careInfo2[uid]['stat'][0] += stat[1]
+                    click = stat[0] + stat[3]
+                    expose = stat[1] + stat[4]
+                    if expose > 0:
+                        careInfo2[uid]['stat'][0] += expose
                         careInfo2[uid]['stat'][1] += 1
-                    if stat[0] > 0:
-                        careInfo2[uid]['stat'][2] += stat[0]
+                    if click > 0:
+                        careInfo2[uid]['stat'][2] += click
                         careInfo2[uid]['stat'][3] += 1
             fp = open('data/care-'+str(date), 'w')
             for uid, pstat in careInfo2.iteritems():
@@ -1364,7 +1388,8 @@ class PostUniform(Editor):
         fp.close()
 
         return []
-
+    
+#点击位置计算，评价口碑排序效果
 class ClickPos(Editor):
     def loadData(self):
         date = datetime.date.today() - datetime.timedelta(days=6)
@@ -1468,7 +1493,6 @@ class ClickPos(Editor):
         fp.close()
         return []
 
-import math
 class KoubeiScore(Editor):
     clickCount = {}
     firstLoad = True
@@ -1585,6 +1609,7 @@ class IncKoubeiScore(KoubeiScore):
             self.calcRanked(itemId, mdls, True)
 
 from bucket import *
+#人口统计学特征：宝宝性别，年龄的bucket
 class UserFeature(Editor):
     def loadData(self):
         dvcPost = {}
@@ -1625,12 +1650,14 @@ class UserFeature(Editor):
         os.system('cp %s %s'%(targetPath, '/opt/parsed_data/bucket/final_good_post.txt'))
         return []
 
+#缺少评价sku统计
 class NopicSku(Editor):
     skuDict = {}
+    catgyDict = {}
     def loadCheckPoint(self):
         self.checkPoint = 0
     def loadData(self):
-        return RelateSku.select(RelateSku.id, RelateSku.name, RelateSku.status, RelateSku.relate_flag, RelateSku.category_id_ng).where(RelateSku.id>self.checkPoint).order_by(RelateSku.id).limit(self.batchSize)
+        return RelateSku.select(RelateSku.id, RelateSku.name, RelateSku.status, RelateSku.relate_flag, RelateSku.category_id_ng, RelateSku.is_single_sale, RelateSku.warehouse_type).where(RelateSku.id>self.checkPoint).order_by(RelateSku.id).limit(self.batchSize)
 
     def edit(self, model):
         if model.relate_flag:
@@ -1638,10 +1665,12 @@ class NopicSku(Editor):
         else:
             skuKey = model.id
         if skuKey not in self.skuDict:
-            #skuId, total, nodefault, haspic, name, catgy
-            self.skuDict[skuKey] = [0, 0, 0, 0, '', '']
+            #skuId, total, nodefault, haspic, name, catgy, self-support
+            self.skuDict[skuKey] = [0, 0, 0, 0, '', '', 'no']
             
         value = self.skuDict[skuKey]
+        if int(model.is_single_sale) == 1 and int(model.warehouse_type) in [1, 6, 8]:
+            value[6] = 'yes'
         mdls = Koubei.select(Koubei.id, Koubei.subject_id, Koubei.auto_evaluate).where((Koubei.item_id==model.id)&(Koubei.status==2)&(Koubei.subject_id>0)).order_by(Koubei.created_time.desc())
         
         for mdl in mdls:
@@ -1651,6 +1680,13 @@ class NopicSku(Editor):
                 value[4] = model.name
                 try:
                     cmdl = ItemCatgy.select().where(ItemCatgy.id==cid).get()
+                    if cmdl.path:
+                        cid = int(cmdl.path.split('-')[0])
+                        if cid in self.catgyDict:
+                            cmdl = self.catgyDict[cid]
+                        else:
+                            cmdl = ItemCatgy.select().where(ItemCatgy.id==cid).get()
+                            self.catgyDict[cid] = cmdl
                     catgy = cmdl.name.split('/')[0]
                     value[5] = catgy
                 except:
@@ -1674,7 +1710,7 @@ class NopicSku(Editor):
             if value[0] == 0:
                 continue
             if value[1] < 10 or value[2] < 10 or value[3] < 3:
-                fp.write('%s, %s, %s, %s, %s, %s\n'%(value[0], value[1], value[2], value[3], value[4], value[5]))
+                fp.write('%s, %s, %s, %s, %s, %s, %s\n'%(value[0], value[1], value[2], value[3], value[4], value[5], value[6]))
         fp.close()
 
 from email_util import *
@@ -1703,7 +1739,7 @@ class KbrankMonitor(Editor):
             msg = 'Broken %s'%url
         #send monite mail
         title = '【口碑排序监控报警】'
-        addr = ['yandechen@mia.com']
+        addr = ['yandechen@mia.com', 'houjianyu@mia.com']
         mail = EmailUtil('exmail.qq.com', 'miasearch@mia.com', 'HelloJack123')
         mail.sendEmail(addr, title, msg)
         return []

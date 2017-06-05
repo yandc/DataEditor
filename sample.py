@@ -32,8 +32,8 @@ def sampleRate():
                 subId = log['user_log']['curl_params']['params']['suject_id']
             except:
                 continue
-            hint = zlib.crc32(dvcId)
-            if hint % 10 == 0:
+            hint = zlib.crc32(dvcId)&0xffffffff
+            if hint % 10 == 9:
                 pva += 1
                 if dvcId not in uva:
                     uva[dvcId] = set()

@@ -136,4 +136,16 @@ def uploadImage(imgType, fromLink, path=None):
             return 'succ', result['content']
     except Exception, e:
         return 'fail', str(e)
-        
+
+import math
+def calcCrt(click, expose):
+    if expose == 0:
+        return 0
+    p = min(float(click)/expose, 0.95)
+    n = expose
+    z = 1.96
+    z2 = z*z
+    a = p+z2/(2*n)-z*math.sqrt(p*(1-p)/n+z2/(4*n*n))
+    b = 1+z2/n
+    return round(a/b, 4)
+    
