@@ -141,6 +141,8 @@ import math
 def calcCrt(click, expose):
     if expose == 0:
         return 0
+    elif expose < click:
+        return -1
     p = min(float(click)/expose, 0.95)
     n = expose
     z = 1.96

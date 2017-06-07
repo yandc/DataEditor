@@ -13,6 +13,10 @@ class Editor:
         self.count = 0
         self.pid = 0
         self.loadCheckPoint()
+        self.loadInitData()
+
+    def loadInitData(self):
+        pass
 
     def loadData(self):
         srcModel = self.srcModel
@@ -996,15 +1000,16 @@ import heapq
 import hashlib
 import os
 class SimPost(Editor):
-    index = {}
-    indexInc = {}
-    postInfo = {}
-    postInfoInc = {}
     thresh = 0.2
     maxPostNum = 200000
     minWords = 10
     batchSize = 10000
-    fp = None
+    def loadInitData(self):
+        self.index = {}
+        self.indexInc = {}
+        self.postInfo = {}
+        self.postInfoInc = {}
+        self.fp = None
     
     def setCheckPoint(self, post):
         return int(post[0])
@@ -1171,7 +1176,8 @@ class DailyExpose(Editor):
         rds = redis.StrictRedis(host = '10.1.60.190')
         today = datetime.date.today()
         yday = today - datetime.timedelta(days=1)
-        if os.path.exists('/opt/parsed_data/did_article/%s/part-00000'%yday.strftime('%Y%m%d')):
+        ydayStr = yday.strftime('%Y%m%d')
+        if self.checkPoint == int(today.strftime('%Y%m%d')):
             return []
         date = yday
         lenDict = {}
@@ -1180,8 +1186,10 @@ class DailyExpose(Editor):
             path = '/opt/parsed_data/did_article/%s/'%dateStr
             if not os.path.exists(path):
                 os.mkdir(path)
-                os.system('/usr/local/hadoop/bin/hadoop fs -get  /search/userprofile/%s/article/part* %s'%(dateStr, path))
-            fpDict = {}
+            os.system('/usr/local/hadoop/bin/hadoop fs -get  /search/userprofile/%s/article/part* %s'%(dateStr, path))
+            if not os.path.exists(path+'part-00000'):
+                return []
+            fp = open('data/expose_%s'%dateStr, 'w')
             for fname in os.listdir(path):
                 logging.info('Process %s'%(path+fname))
                 for line in open(path+fname):
@@ -1199,12 +1207,10 @@ class DailyExpose(Editor):
                         ts = int(eleli[-1])
                         if ts < 0:
                             dt = datetime.datetime.fromtimestamp(abs(ts))
-                            if dt.date() >= date:
-                                dateStr = dt.date().strftime('%Y%m%d')
-                                if dateStr not in fpDict:
-                                    _path = 'data/expose_%s'%dateStr
-                                    fpDict[dateStr] = open(_path, 'w')
-                                fpDict[dateStr].write('list:%s:%s\n'%(key, ele))
+                            if dt.date() > date:
+                                continue
+                            elif dt.date() == date:
+                                fp.write('list:%s:%s\n'%(key, ele))
                             else:
                                 break
                         else:
@@ -1219,26 +1225,24 @@ class DailyExpose(Editor):
                         ts = int(eleli[-1])
                         if ts < 0:
                             dt = datetime.datetime.fromtimestamp(abs(ts))
-                            if dt.date() >= date:
-                                dateStr = dt.date().strftime('%Y%m%d')
-                                if dateStr not in fpDict:
-                                    _path = 'data/expose_%s'%dateStr
-                                    fpDict[dateStr] = open(_path, 'w')
-                                fpDict[dateStr].write('detail:%s:%s\n'%(key, ele))
+                            if dt.date() > date:
+                                continue
+                            elif dt.date() == date:
+                                fp.write('detail:%s:%s\n'%(key, ele))
                             else:
                                 break
                         else:
                             break
-            for dateStr, fp in fpDict.iteritems():
-                fp.close()
+            fp.close()
             if date == yday:
                 break
             date += datetime.timedelta(days=1)
-        fp = open('/opt/parsed_data/ctr/expose_length_%s'%dateStr, 'w')
+        fp = open('/opt/parsed_data/ctr/expose_length_%s'%ydayStr, 'w')
         for key, llen in lenDict.iteritems():
             if llen > 100:
                 fp.write('%s, %s\n'%(key, llen))
         fp.close()
+        self.checkPoint = int(today.strftime('%Y%m%d'))
         return []
     
 #曝光，点击，点击率，普通、达人比较
@@ -1254,12 +1258,13 @@ class PostUniform(Editor):
 
         #load post info
         pinfo = {}
-        yday = datetime.date.today() - datetime.timedelta(days=1)
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
         date = yday
         dateStr = yday.strftime('%Y%m%d')
         if not os.path.exists('data/expose_%s'%dateStr):
             return
-        if os.path.exists('data/care-%s'%str(yday)):
+        if self.checkPoint == int(today.strftime('%Y%m%d')):
             return []
         fname = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%yday.strftime('%Y%m%d')
         fp = open(fname)
@@ -1315,7 +1320,9 @@ class PostUniform(Editor):
             path = 'data/click-%s/'%dateStr
             if not os.path.exists(path):
                 os.mkdir(path)
-                os.system('hadoop fs -get /search/parsed_data/%s/article_uv_with_referer/part-* %s'%(dateStr, path))
+            os.system('hadoop fs -get /search/parsed_data/%s/article_uv_with_referer/part-* %s'%(dateStr, path))
+            if not os.path.exists(path+'part-00000'):
+                return []
             for name in os.listdir(path):
                 if name[:4] != 'part':
                     continue
@@ -1386,9 +1393,54 @@ class PostUniform(Editor):
         for days, count in postClickTime.iteritems():
             fp.write('%s, %s\n'%(days, count))
         fp.close()
-
+        self.checkPoint = int(today.strftime('%Y%m%d'))
         return []
-    
+
+class CollectCtr(Editor):
+    def loadData(self):
+        accPath = '/opt/parsed_data/ctr/acc_ctr'
+        accCtr = {}
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        date = yday
+        if self.checkPoint == int(today.strftime('%Y%m%d')):
+            return []
+        if os.path.exists(accPath):
+            for line in open(accPath):
+                li = line[:-1].split('\t')
+                li[3] = 0
+                li[6] = 0
+                pid = int(li[0])
+                accCtr[pid] = [int(x) for x in li[1:]]
+            
+        while True:
+            dateStr = yday.strftime('%Y-%m-%d')
+            path = '/opt/parsed_data/ctr/%s'%dateStr
+            if not os.path.exists(path):
+                return []
+            for line in open(path):
+                li = line[:-1].split('\t')
+                li[3] = 0
+                li[6] = 0
+                pid = int(li[0])
+                if pid in accCtr:
+                    for i, v in enumerate(li[1:]):
+                        accCtr[pid][i] += int(v)
+                else:
+                    accCtr[pid] = [int(x) for x in li[1:]]
+            if date == yday:
+                break
+            date += datetime.timedelta(days=1)
+            
+        self.checkPoint = int(today.strftime('%Y%m%d'))
+        fp = open(accPath, 'w')
+        for pid, stat in accCtr.iteritems():
+            stat[2] = calcCrt(stat[0], stat[1])
+            stat[5] = calcCrt(stat[3], stat[4])
+            fp.write(str(pid)+'\t'+'\t'.join([str(x) for x in stat])+'\n')
+        fp.close()
+        return []
+        
 #点击位置计算，评价口碑排序效果
 class ClickPos(Editor):
     def loadData(self):
@@ -1494,17 +1546,17 @@ class ClickPos(Editor):
         return []
 
 class KoubeiScore(Editor):
-    clickCount = {}
-    firstLoad = True
     def __init__(self, **kwargs):
         Editor.__init__(self, **kwargs)
         if 'env' in kwargs:
             self.redis = RedisUtil(kwargs['env'])
         else:
             self.redis = RedisUtil()
-        self.loadClickData()
+        self.clickCount = {}
+        self.loadInitData()
         
-    def loadClickData(self):
+    def loadInitData(self):
+        self.firstLoad = True
         logging.info('load click data...')
         date = datetime.date.today() - datetime.timedelta(days=1)
         clickDays = 7
@@ -1590,9 +1642,8 @@ class KoubeiScore(Editor):
         self.checkPoint = int(datetime.date.today().strftime('%Y%m%d'))
 
 class IncKoubeiScore(KoubeiScore):
-    IncKoubei = {}
-    def loadClickData(self):
-        pass
+    def loadInitData(self):
+        self.IncKoubei = {}
     
     def loadData(self):
         return Koubei.select().where((Koubei.id>self.checkPoint)&(Koubei.status==2)&(Koubei.subject_id>0)).order_by(Koubei.id).limit(self.batchSize)
