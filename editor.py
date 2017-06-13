@@ -1244,6 +1244,93 @@ class DailyExpose(Editor):
         fp.close()
         self.checkPoint = int(today.strftime('%Y%m%d'))
         return []
+#每日真实曝光
+class DailyExpose2(Editor):
+    def loadData(self):
+        rds = redis.StrictRedis(host = '10.1.60.190')
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        ydayStr = yday.strftime('%Y%m%d')
+        if self.checkPoint == int(today.strftime('%Y%m%d')):
+            return []
+        date = yday
+        lenDict = {}
+        while True:
+            dateStr = date.strftime('%Y%m%d')
+            path = 'data/click-%s/'%dateStr
+            if not os.path.exists(path):
+                os.mkdir(path)
+            os.system('hadoop fs -get /search/parsed_data/%s/article_uv_with_referer/part-* %s'%(dateStr, path))
+            if not os.path.exists(path+'part-00000'):
+                return []
+            fp = open('data/expose_%s'%dateStr, 'w')
+            for fname in os.listdir(path):
+                logging.info('Process %s'%(path+fname))
+                for line in open(path+fname):
+                    idx = line.find("',")
+                    li = line[3:idx].split('_')
+                    pid = li[0]
+                    typ = li[1]
+                    if typ not in ('grouphome', 'koubeidetail'):
+                        continue
+                    dvcId = li[2]
+                    lkey = 'session_%s'%(dvcId)
+                    dkey = 'session_detail_%s_%s'%(dateStr, dvcId)
+                    #expose data of list page
+                    if lkey not in lenDict:
+                        lenDict[lkey] = rds.llen(lkey)
+                    for ele in rds.lrange(lkey, start=0, end=-1):
+                        if not ele:
+                            continue
+                        eleli = ele.split(',')
+                        ts = int(eleli[-1])
+                        if ts < 0:
+                            dt = datetime.datetime.fromtimestamp(abs(ts))
+                            if dt.date() > date:
+                                continue
+                            elif dt.date() == date:
+                                try:
+                                    idx = eleli.index(pid)
+                                    fp.write('list:%s:%s\n'%(dvcId, ','.join(eleli[:idx+1])))
+                                except:
+                                    pass
+                            else:
+                                break
+                        else:
+                            break
+                    #expost data of detail page
+                    if dkey not in lenDict:
+                        lenDict[dkey] = rds.llen(dkey)
+                    for ele in rds.lrange(dkey, start=0, end=-1):
+                        if not ele:
+                            continue
+                        eleli = ele.split(',')
+                        ts = int(eleli[-1])
+                        if ts < 0:
+                            dt = datetime.datetime.fromtimestamp(abs(ts))
+                            if dt.date() > date:
+                                continue
+                            elif dt.date() == date:
+                                try:
+                                    idx = eleli.index(pid)
+                                    fp.write('detail:%s:%s\n'%(dvcId, ','.join(eleli[:idx+1])))
+                                except:
+                                    pass
+                            else:
+                                break
+                        else:
+                            break
+            fp.close()
+            if date == yday:
+                break
+            date += datetime.timedelta(days=1)
+        fp = open('/opt/parsed_data/ctr/expose_length_%s'%ydayStr, 'w')
+        for key, llen in lenDict.iteritems():
+            if llen > 100:
+                fp.write('%s, %s\n'%(key, llen))
+        fp.close()
+        self.checkPoint = int(today.strftime('%Y%m%d'))
+        return []
     
 #曝光，点击，点击率，普通、达人比较
 class PostUniform(Editor):
@@ -1263,7 +1350,7 @@ class PostUniform(Editor):
         date = yday
         dateStr = yday.strftime('%Y%m%d')
         if not os.path.exists('data/expose_%s'%dateStr):
-            return
+            return []
         if self.checkPoint == int(today.strftime('%Y%m%d')):
             return []
         fname = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%yday.strftime('%Y%m%d')
@@ -1296,7 +1383,7 @@ class PostUniform(Editor):
                 _type = li[0]
                 dvcId = li[1]
                 ele = li[2][:-1]
-                for postid in ele.split(',')[:-1]:
+                for postid in ele.split(','):
                     try:
                         pid = int(postid)
                     except:
@@ -1335,9 +1422,9 @@ class PostUniform(Editor):
                         continue
                     if pid not in stats:
                         stats[pid] = [0, 0, 0, 0, 0, 0]
-                    if 'koubei_detail' in li[0]:
+                    if 'koubeidetail' in li[0]:
                         stats[pid][3] += num
-                    elif 'group_home' in li[0]:
+                    elif 'grouphome' in li[0]:
                         stats[pid][0] += num
                     if pid not in pinfo:
                         continue
@@ -1395,7 +1482,7 @@ class PostUniform(Editor):
         fp.close()
         self.checkPoint = int(today.strftime('%Y%m%d'))
         return []
-
+#30天点击率
 class CollectCtr(Editor):
     def loadData(self):
         accPath = '/opt/parsed_data/ctr/acc_ctr'
@@ -1461,11 +1548,9 @@ class ClickPos(Editor):
                 li = line[3:-2].split("',")
                 pid = int(li[0])
                 try:#calc relateSet
-                    if pid not in rankInfo:
-                        mdl = Koubei.select().where(Koubei.subject_id==pid).get()
-                        itemId = mdl.item_id
-                    else:
-                        itemId = rankInfo[pid][1]
+                    mdl = Koubei.select().where(Koubei.subject_id==pid).get()
+                    itemId = mdl.item_id
+                    kbid = mdl.id
                     if itemId in related:
                         relateSet = related[itemId]
                     else:
@@ -1482,7 +1567,7 @@ class ClickPos(Editor):
                     continue
 
                 #get rank info from koubei
-                if pid not in rankInfo:
+                if kbid not in rankInfo:
                     #mdls = Koubei.select().where((Koubei.item_id<<list(relateSet))&(Koubei.status==2)&(Koubei.subject_id>0)&(Koubei.auto_evaluate==0)).order_by(Koubei.is_bottom, Koubei.auto_evaluate, Koubei.rank_score.desc(), Koubei.score.desc(), Koubei.created_time.desc())
                     #for i, mdl in enumerate(mdls):
                     #    rankInfo[mdl.subject_id] = (i, mdl.item_id)
@@ -1493,15 +1578,15 @@ class ClickPos(Editor):
                         if not rs:
                             continue
                         result += rs
-                        for pid, score in rs:
-                            rankInfo[pid] = [0, itemId]
+                        for _kbid, score in rs:
+                            rankInfo[_kbid] = [0, itemId]
                     ranked = sorted(result, key=lambda x:x[1], reverse=True)
                     for i, rank in enumerate(ranked):
                         rankInfo[rank[0]][0] = i
                         
-                if pid not in rankInfo:#post gone
+                if kbid not in rankInfo:#post gone
                     continue
-                rank = rankInfo[pid][0]
+                rank = rankInfo[kbid][0]
                 itemId = min(relateSet)
                 if itemId not in clickPos:
                     clickPos[itemId] = {}
@@ -1559,7 +1644,7 @@ class KoubeiScore(Editor):
         self.firstLoad = True
         logging.info('load click data...')
         date = datetime.date.today() - datetime.timedelta(days=1)
-        clickDays = 7
+        clickDays = 30
         path = '/opt/parsed_data/uv/%s/%s/'%(date.strftime('%Y%m%d'), clickDays)
         if os.path.exists(path):
             for name in os.listdir(path):
@@ -1794,3 +1879,82 @@ class KbrankMonitor(Editor):
         mail = EmailUtil('exmail.qq.com', 'miasearch@mia.com', 'HelloJack123')
         mail.sendEmail(addr, title, msg)
         return []
+#活动结束用户数据统计
+class ActiveData(Editor):
+    labelId = 23850
+    exclude = (24800, 25074, 19557)
+    source = (1, 2)
+    startDate = '20170523'
+    endDate = '20170531'
+    info = {}
+    def loadCheckPoint(self):
+        self.checkPoint = 0
+    def loadData(self):
+        return Label.select().where((Label.label_id==self.labelId) & (Label.id>self.checkPoint)).order_by(Label.id).limit(self.batchSize)
+
+    def edit(self, model):
+        dateStr = model.create_time.strftime('%Y%m%d')
+        if dateStr < self.startDate or dateStr > self.endDate:
+            return 0
+        if self.exclude:
+            mdls = Label.select().where(Label.subject_id==model.subject_id)
+            for mdl in mdls:
+                if mdl.label_id in self.exclude:
+                    return 0
+        try:
+            mdl = Subject.select().where(Subject.id==model.subject_id).get()
+            if mdl.status in (-1, 0):
+                return 0
+            if mdl.source not in self.source:
+                return 0
+            #koubeiPostCount, groupPostCount, fineCount, firstPostId
+            if mdl.user_id not in self.info:
+                self.info[mdl.user_id] = [0, 0, mdl.id]
+            self.info[mdl.user_id][0] += 1
+            if mdl.is_fine:
+                self.info[mdl.user_id][2] += 1
+        except:
+            return 0
+        return 1
+
+    def writeData(self, fp, uid, stat):
+        mdl = Subject.select().where((Subject.user_id==uid)&(Subject.status.not_in([-1, 0]))).order_by(Subject.id).limit(1).get()
+        if mdl.id == stat[2]:
+            stat[2] = mdl.source
+        else:
+            stat[2] = 0
+        mdl = User.select().where(User.id==uid).get()
+        fp.write('%s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, stat[0], stat[1], stat[2]))
+        
+    def finish(self):
+        fp = open('data/%s-%s.csv'%(self.__class__.__name__, self.labelId), 'w')
+        for uid, stat in self.info.iteritems():
+            self.writeData(fp, uid, stat)
+        fp.close()
+
+class ActiveData2(ActiveData):
+    labelId = 23850
+    exclude = []
+    source = (1,)
+    startDate = '20170522'
+    endDate = '20170526'
+
+class ActiveData3(ActiveData2):
+    exclude = (19557, 21734)
+    def writeData(self, fp, uid, stat):
+        if stat[0] < 5:
+            return
+        mdl = Subject.select().where((Subject.user_id==uid)&(Subject.status.not_in([-1, 0]))).order_by(Subject.id).limit(1).get()
+        if mdl.id == stat[2]:
+            stat[2] = mdl.source
+        else:
+            stat[2] = 0
+        mdl = User.select().where(User.id==uid).get()
+        try:
+            addr = Address.select().where((Address.user_id==uid)&(Address.is_default==1)).get()
+            prov = Prov.select().where(Prov.id==addr.prov).get()
+            city = City.select().where(City.id==addr.city).get()
+            area = Area.select().where(Area.id==addr.area).get()
+            fp.write('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.nickname, mdl.cell_phone, addr.name, prov.name, city.name, area.name, addr.address, stat[0], stat[1], stat[2]))
+        except:
+            fp.write('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.nickname, mdl.cell_phone, '', '', '', '', '', stat[0], stat[1], stat[2]))

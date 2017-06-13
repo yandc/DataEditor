@@ -3,9 +3,9 @@ import redis
 import pdb
 
 class DeviceBucket:
-    dvcInfo = {}
-    bucket = {}
     def __init__(self):
+        self.dvcInfo = {}
+        self.bucket = {}
         self.rds = redis.StrictRedis(host='10.1.60.190')
         path = '/opt/parsed_data/demography/USER_result.txt'
         for line in open(path):
