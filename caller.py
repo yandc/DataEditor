@@ -34,6 +34,7 @@ if __name__ == "__main__":
         for cmd in cmds:
             exec('obj = %s'%cmd)
             obj.run()
+            del obj
         if 'period' in option:
             time.sleep(int(option['period'])*60)
         else:

@@ -139,7 +139,7 @@ def uploadImage(imgType, fromLink, path=None):
 
 import math
 def calcCrt(click, expose):
-    if expose == 0:
+    if click == 0 or expose == 0:
         return 0
     elif expose < click:
         return 0.99
@@ -151,4 +151,3 @@ def calcCrt(click, expose):
     b = 1+z2/n
     return round(a/b, 4)
     
-

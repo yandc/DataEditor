@@ -1012,7 +1012,7 @@ class SimPost(Editor):
         self.fp = None
     
     def setCheckPoint(self, post):
-        return int(post[0])
+        return 0
 
     def loadData(self):
         if self.fp == None:
@@ -1256,6 +1256,7 @@ class DailyExpose2(Editor):
         date = yday
         lenDict = {}
         while True:
+            itemCtr = {}
             dateStr = date.strftime('%Y%m%d')
             path = 'data/click-%s/'%dateStr
             if not os.path.exists(path):
@@ -1264,62 +1265,78 @@ class DailyExpose2(Editor):
             if not os.path.exists(path+'part-00000'):
                 return []
             fp = open('data/expose_%s'%dateStr, 'w')
+            fpClick = open('/opt/parsed_data/ctr/exposed-click-%s'%dateStr, 'w')
             for fname in os.listdir(path):
+                if fname[:4] != 'part':
+                    continue
                 logging.info('Process %s'%(path+fname))
                 for line in open(path+fname):
                     idx = line.find("',")
                     li = line[3:idx].split('_')
+                    num = line[idx+2:-2]
                     pid = li[0]
-                    typ = li[1]
-                    if typ not in ('grouphome', 'koubeidetail'):
-                        continue
+                    _type = li[1]
                     dvcId = li[2]
-                    lkey = 'session_%s'%(dvcId)
-                    dkey = 'session_detail_%s_%s'%(dateStr, dvcId)
+                    clickTs = int(li[3])/1000
+                    if _type == 'grouphome':
+                        key = 'session_%s'%(dvcId)
+                        typ = 'list'
+                    elif _type == 'koubeidetail':
+                        key = 'session_detail_%s_%s'%(dateStr, dvcId)
+                        typ = 'detail'
+                        ppid = li[4]
+                    else:
+                        continue
+                    isExpose = False
                     #expose data of list page
-                    if lkey not in lenDict:
-                        lenDict[lkey] = rds.llen(lkey)
-                    for ele in rds.lrange(lkey, start=0, end=-1):
+                    if key not in lenDict:
+                        lenDict[key] = rds.llen(key)
+                    for ele in rds.lrange(key, start=0, end=-1):
                         if not ele:
                             continue
                         eleli = ele.split(',')
                         ts = int(eleli[-1])
                         if ts < 0:
+                            if clickTs < abs(ts):#repeat expose
+                                continue
                             dt = datetime.datetime.fromtimestamp(abs(ts))
                             if dt.date() > date:
                                 continue
                             elif dt.date() == date:
                                 try:
                                     idx = eleli.index(pid)
-                                    fp.write('list:%s:%s\n'%(dvcId, ','.join(eleli[:idx+1])))
+                                    ctn = '%s:%s:%s\n'%(typ, dvcId, ','.join(eleli[:idx+1]))
+                                    fp.write(ctn)
+                                    if typ == 'detail':
+                                        if ppid not in itemCtr:
+                                            itemCtr[ppid] = {}
+                                        for _pid in eleli[:idx+1]:
+                                            if _pid not in itemCtr[ppid]:
+                                                itemCtr[ppid][_pid] = [0, 0, 0]
+                                            itemCtr[ppid][_pid][1] += 1
+                                    isExpose = True
+                                    break
                                 except:
                                     pass
                             else:
                                 break
                         else:
                             break
-                    #expost data of detail page
-                    if dkey not in lenDict:
-                        lenDict[dkey] = rds.llen(dkey)
-                    for ele in rds.lrange(dkey, start=0, end=-1):
-                        if not ele:
-                            continue
-                        eleli = ele.split(',')
-                        ts = int(eleli[-1])
-                        if ts < 0:
-                            dt = datetime.datetime.fromtimestamp(abs(ts))
-                            if dt.date() > date:
-                                continue
-                            elif dt.date() == date:
-                                try:
-                                    idx = eleli.index(pid)
-                                    fp.write('detail:%s:%s\n'%(dvcId, ','.join(eleli[:idx+1])))
-                                except:
-                                    pass
-                            else:
-                                break
-                        else:
-                            break
+                    if isExpose:
+                        fpClick.write(line)
+                        if typ == 'detail':
+                            if ppid not in itemCtr:
+                                itemCtr[ppid] = {}
+                            if pid not in itemCtr[ppid]:
+                                itemCtr[ppid][pid] = [0, 0, 0]
+                            itemCtr[ppid][pid][0] += int(num)
+            fp.close()
+            fpClick.close()
+            fp = open('/opt/parsed_data/ctr/item-%s'%dateStr, 'w')
+            for ppid, eles in itemCtr.iteritems():
+                for pid, stat in eles.iteritems():
+                    stat[2] = calcCrt(stat[0], stat[1])
+                    fp.write('%s\t%s\t%s\t%s\t%s\n'%(ppid, pid, stat[0], stat[1], stat[2]))
             fp.close()
             if date == yday:
                 break
@@ -1331,7 +1348,60 @@ class DailyExpose2(Editor):
         fp.close()
         self.checkPoint = int(today.strftime('%Y%m%d'))
         return []
-    
+#koubeilist的点击率
+class DailyExpose3(Editor):
+    def loadData(self):
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        ydayStr = yday.strftime('%Y%m%d')
+        if self.checkPoint == int(today.strftime('%Y%m%d')):
+            return []
+        date = yday
+        rds = RedisUtil(env='online')
+        while True:
+            kblCtr = {}
+            dateStr = date.strftime('%Y%m%d')
+            path = 'data/click-%s/'%dateStr
+            if not os.path.exists(path+'part-00000'):
+                return []
+            for fname in os.listdir(path):
+                logging.info('Process %s'%(path+fname))
+                for line in open(path+fname):
+                    idx = line.find("',")
+                    li = line[3:idx].split('_')
+                    num = line[idx+2:-2]
+                    pid = li[0]
+                    _type = li[1]
+                    if _type != 'koubeilist':
+                        continue
+                    if pid not in kblCtr:
+                        kblCtr[pid] = [0, 0, 0]
+                    kblCtr[pid][0] += int(num)
+            for key in rds.keys('koubei:expose:%s:more:*'%dateStr):
+                for expose in rds.inst.lrange(key, start=0, end=-1):
+                    if not expose:
+                        continue
+                    eles = json.loads(expose)
+                    if len(eles) > 2 and type(eles[-2]) == unicode:
+                        mdls = Koubei.select(Koubei.subject_id).where(Koubei.id<<eles[:-2])
+                    else:
+                        mdls = Koubei.select(Koubei.subject_id).where(Koubei.id<<eles)
+                    for mdl in mdls:
+                        pid = str(mdl.subject_id)
+                        if pid not in kblCtr:
+                            kblCtr[pid] = [0, 0, 0]
+                        kblCtr[pid][1] += 1
+            fp = open('/opt/parsed_data/ctr/kblist-%s'%dateStr, 'w')
+            for pid, stat in kblCtr.iteritems():
+                stat[2] = calcCrt(stat[0], stat[1])
+                fp.write('%s\t%s\t%s\t%s\n'%(pid, stat[0], stat[1], stat[2]))
+            fp.close()
+            if date == yday:
+                break
+            date += datetime.timedelta(days=1)
+        self.checkPoint = int(today.strftime('%Y%m%d'))
+        return []
+            
 #曝光，点击，点击率，普通、达人比较
 class PostUniform(Editor):
     def loadData(self):
@@ -1404,35 +1474,29 @@ class PostUniform(Editor):
                     postExposeTime[diff.days] += 1
 
             #click data
-            path = 'data/click-%s/'%dateStr
+            path = '/opt/parsed_data/ctr/exposed-click-%s'%dateStr
             if not os.path.exists(path):
-                os.mkdir(path)
-            os.system('hadoop fs -get /search/parsed_data/%s/article_uv_with_referer/part-* %s'%(dateStr, path))
-            if not os.path.exists(path+'part-00000'):
                 return []
-            for name in os.listdir(path):
-                if name[:4] != 'part':
+            for line in open(path):
+                li = line[3:-2].split("',")
+                try:
+                    pid = int(li[0].split('_')[0])
+                    num = int(li[1])
+                except:
                     continue
-                for line in open(path+name):
-                    li = line[3:-2].split("',")
-                    try:
-                        pid = int(li[0].split('_')[0])
-                        num = int(li[1])
-                    except:
-                        continue
-                    if pid not in stats:
-                        stats[pid] = [0, 0, 0, 0, 0, 0]
-                    if 'koubeidetail' in li[0]:
-                        stats[pid][3] += num
-                    elif 'grouphome' in li[0]:
-                        stats[pid][0] += num
-                    if pid not in pinfo:
-                        continue
-                    cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
-                    diff = date - cdate
-                    if diff.days not in postClickTime:
-                        postClickTime[diff.days] = 0
-                    postClickTime[diff.days] += 1
+                if pid not in stats:
+                    stats[pid] = [0, 0, 0, 0, 0, 0]
+                if 'koubeidetail' in li[0]:
+                    stats[pid][3] += num
+                elif 'grouphome' in li[0]:
+                    stats[pid][0] += num
+                if pid not in pinfo:
+                    continue
+                cdate = datetime.date(*[int(x) for x in pinfo[pid][1][:10].split('-')])
+                diff = date - cdate
+                if diff.days not in postClickTime:
+                    postClickTime[diff.days] = 0
+                postClickTime[diff.days] += 1
             
             #calc crt
             for pid, stat in stats.iteritems():
@@ -1486,7 +1550,11 @@ class PostUniform(Editor):
 class CollectCtr(Editor):
     def loadData(self):
         accPath = '/opt/parsed_data/ctr/acc_ctr'
+        itemAccPath = '/opt/parsed_data/ctr/item_acc_ctr'
+        kblAccPath = '/opt/parsed_data/ctr/kblist_acc_ctr'
         accCtr = {}
+        itemAccCtr = {}
+        kblAccCtr = {}
         today = datetime.date.today()
         yday = today - datetime.timedelta(days=1)
         date = yday
@@ -1499,11 +1567,26 @@ class CollectCtr(Editor):
                 li[6] = 0
                 pid = int(li[0])
                 accCtr[pid] = [int(x) for x in li[1:]]
-            
+        if os.path.exists(itemAccPath):
+            for line in open(itemAccPath):
+                li = line[:-1].split('\t')
+                ppid = li[0]
+                pid = li[1]
+                if ppid not in itemAccCtr:
+                    itemAccCtr[ppid] = {}
+                itemAccCtr[ppid][pid] = [int(li[2]), int(li[3]), float(li[4])]
+        if os.path.exists(kblAccPath):
+            for line in open(kblAccPath):
+                li = line[:-1].split('\t')
+                pid = li[0]
+                kblAccCtr[pid] = [int(li[1]), int(li[2]), 0]
+
         while True:
-            dateStr = yday.strftime('%Y-%m-%d')
-            path = '/opt/parsed_data/ctr/%s'%dateStr
-            if not os.path.exists(path):
+            dateStr = date.strftime('%Y%m%d')
+            path = '/opt/parsed_data/ctr/%s'%date.strftime('%Y-%m-%d')
+            itemPath = '/opt/parsed_data/ctr/item-%s'%dateStr
+            kblPath = '/opt/parsed_data/ctr/kblist-%s'%dateStr
+            if not os.path.exists(path) or not os.path.exists(itemPath) or not os.path.exists(kblPath):
                 return []
             for line in open(path):
                 li = line[:-1].split('\t')
@@ -1515,16 +1598,45 @@ class CollectCtr(Editor):
                         accCtr[pid][i] += int(v)
                 else:
                     accCtr[pid] = [int(x) for x in li[1:]]
+            for line in open(itemPath):
+                li = line[:-1].split('\t')
+                ppid = li[0]
+                pid = li[1]
+                if ppid not in itemAccCtr:
+                    itemAccCtr[ppid] = {}
+                if pid not in itemAccCtr[ppid]:
+                    itemAccCtr[ppid][pid] = [0, 0, 0]
+                stat = itemAccCtr[ppid][pid]
+                stat[0] += int(li[2])
+                stat[1] += int(li[3])
+            for line in open(kblPath):
+                li = line[:-1].split('\t')
+                pid = li[0]
+                if pid not in kblAccCtr:
+                    kblAccCtr[pid] = [0, 0, 0]
+                kblAccCtr[pid][0] += int(li[1])
+                kblAccCtr[pid][1] += int(li[2])
             if date == yday:
                 break
             date += datetime.timedelta(days=1)
-            
+
         self.checkPoint = int(today.strftime('%Y%m%d'))
         fp = open(accPath, 'w')
         for pid, stat in accCtr.iteritems():
             stat[2] = calcCrt(stat[0], stat[1])
             stat[5] = calcCrt(stat[3], stat[4])
             fp.write(str(pid)+'\t'+'\t'.join([str(x) for x in stat])+'\n')
+        fp.close()
+        fp = open(itemAccPath, 'w')
+        for ppid, eles in itemAccCtr.iteritems():
+            for pid, stat in eles.iteritems():
+                stat[2] = calcCrt(stat[0], stat[1])
+                fp.write('%s\t%s\t%s\t%s\t%s\n'%(ppid, pid, stat[0], stat[1], stat[2]))
+        fp.close()
+        fp = open(kblAccPath, 'w')
+        for pid, stat in kblAccCtr.iteritems():
+            stat[2] = calcCrt(stat[0], stat[1])
+            fp.write('%s\t%s\t%s\t%s\n'%(pid, stat[0], stat[1], stat[2]))
         fp.close()
         return []
         
@@ -1631,20 +1743,21 @@ class ClickPos(Editor):
         return []
 
 class KoubeiScore(Editor):
+    strategy = (0, 1)
     def __init__(self, **kwargs):
+        self.clickCount = {}
+        self.postCtr = {}
         Editor.__init__(self, **kwargs)
         if 'env' in kwargs:
             self.redis = RedisUtil(kwargs['env'])
         else:
             self.redis = RedisUtil()
-        self.clickCount = {}
-        self.loadInitData()
         
     def loadInitData(self):
         self.firstLoad = True
         logging.info('load click data...')
         date = datetime.date.today() - datetime.timedelta(days=1)
-        clickDays = 30
+        clickDays = 7
         path = '/opt/parsed_data/uv/%s/%s/'%(date.strftime('%Y%m%d'), clickDays)
         if os.path.exists(path):
             for name in os.listdir(path):
@@ -1657,6 +1770,14 @@ class KoubeiScore(Editor):
                         self.clickCount[pid] = int(li[1])
                     except:
                         continue
+        path = '/opt/parsed_data/ctr/kblist_acc_ctr'
+        if os.path.exists(path):
+            for line in open(path):
+                li = line[:-1].split('\t')
+                pid = int(li[0])
+                ctr = float(li[3])
+                if ctr > 0:
+                    self.postCtr[pid] = ctr
                 
     def loadData(self):
         if not self.clickCount:
@@ -1669,7 +1790,7 @@ class KoubeiScore(Editor):
             
         return RelateSku.select().where(RelateSku.id>self.checkPoint).order_by(RelateSku.id).limit(self.batchSize)
 
-    def getScore(self, mdl, sub):
+    def getScore(self, mdl, sub, stagy=0):
         pid = mdl.subject_id
         if mdl.auto_evaluate and int(mdl.auto_evaluate) == 1:
             return 15
@@ -1681,7 +1802,10 @@ class KoubeiScore(Editor):
             mscore = 2
         else:
             mscore = int(mdl.machine_score)
-        text = sub.text
+        textLen = 0
+        for c in sub.text:
+            if ord(c) > 128:
+                textLen += 1
         if sub.image_url:
             pics = sub.image_url.split('#')
         else:
@@ -1691,7 +1815,11 @@ class KoubeiScore(Editor):
             click = self.clickCount[pid]
         else:
             click = 1
-        score = (uscore+mscore-2)*5+len(pics)*3+min(len(text)/20,10)+round(math.log(click)-0.25*(datetime.date.today()-ctime.date()).days/30, 2)
+        positive = uscore + mscore - 2
+        score = positive*5+len(pics)*3+min(textLen/20,10)+round(math.log(click)-0.25*(datetime.date.today()-ctime.date()).days/30, 2)
+        
+        if stagy==1 and sub.image_url and positive>4 and pid in self.postCtr:#abtest
+            score += 100*self.postCtr[pid]
         return score
 
     def calcRanked(self, itemId, mdls, incFlag=False):
@@ -1699,24 +1827,28 @@ class KoubeiScore(Editor):
         subDict = {}
         for sub in subjects:
             subDict[sub.id] = sub
-        rankScore = {}
-        key = 'koubei:rank_score:%s'%itemId
-        if incFlag:
-            ranked = self.redis.get_obj(key)
-            if ranked:
-                for kbid, score in ranked:
-                    rankScore[kbid] = score
-        for mdl in mdls:
-            pid = mdl.subject_id
-            kbid = mdl.id
-            score = self.getScore(mdl, subDict[pid])
-            rankScore[kbid] = score
-
-        if len(rankScore) == 0:
-            return 0
-        ranked = sorted(rankScore.iteritems(), key=lambda x:x[1], reverse=True)
-        #save into redis
-        self.redis.set_obj(key, ranked)
+        for stagy in self.strategy:
+            rankScore = {}
+            if stagy == 0:
+                key = 'koubei:rank_score:%s'%itemId
+            else:
+                key = 'koubei:rank_score:%s:%s'%(stagy, itemId)
+            if incFlag:
+                ranked = self.redis.get_obj(key)
+                if ranked:
+                    for kbid, score in ranked:
+                        rankScore[kbid] = score
+            for mdl in mdls:
+                pid = mdl.subject_id
+                kbid = mdl.id
+                score = self.getScore(mdl, subDict[pid], stagy)
+                rankScore[kbid] = score
+    
+            if len(rankScore) == 0:
+                return 0
+            ranked = sorted(rankScore.iteritems(), key=lambda x:x[1], reverse=True)
+            #save into redis
+            self.redis.set_obj(key, ranked)
         return 1
     
     def edit(self, model):
@@ -1881,80 +2013,352 @@ class KbrankMonitor(Editor):
         return []
 #活动结束用户数据统计
 class ActiveData(Editor):
-    labelId = 23850
-    exclude = (24800, 25074, 19557)
-    source = (1, 2)
-    startDate = '20170523'
-    endDate = '20170531'
+    #labelId = [17150,17064,17051,17231,17235,17402,17533,17401,17403,17400,1845 ,2084 ,17798,17794,17792,17793,18735,17881,19198,20506,23566,21807,21810,21806,21808,21817,23558,23563,23570,25291,25287,17918,25276,25279,25074,25996,25999,25994,26004,26495,26482,26486,26481,26575,26593,26595,26598,25986,22056,26013,26755,18265,19973,21734,24800,25500,26322,16738,17260,20933,23850,26052,26416]
+    labelId = [26755]
+    exclude = [19557, 23850, 27682, 27910, 27838]
+    source = (1,)
+    titPic = False
+    startDate = '20170619'
+    endDate = '20170625'
     info = {}
+    detail = {}
+    fpList = []
+    subSet = set()
+    userActive = {}
+    labelInfo = {}
     def loadCheckPoint(self):
         self.checkPoint = 0
     def loadData(self):
-        return Label.select().where((Label.label_id==self.labelId) & (Label.id>self.checkPoint)).order_by(Label.id).limit(self.batchSize)
+        if not self.labelInfo:
+            mdls = RawLabel.select().where(RawLabel.id<<self.labelId)
+            for mdl in mdls:
+                self.labelInfo[mdl.id] = mdl.title
+        return Label.select().where((Label.label_id<<self.labelId) & (Label.id>self.checkPoint)).order_by(Label.id).limit(self.batchSize)
 
     def edit(self, model):
+        pid = model.subject_id
+        if pid in self.subSet:#dedup subject_id
+            return 0
+        else:
+            self.subSet.add(pid)
         dateStr = model.create_time.strftime('%Y%m%d')
         if dateStr < self.startDate or dateStr > self.endDate:
             return 0
+        prefer = 0
         if self.exclude:
-            mdls = Label.select().where(Label.subject_id==model.subject_id)
+            mdls = Label.select().where(Label.subject_id==pid)
             for mdl in mdls:
                 if mdl.label_id in self.exclude:
                     return 0
+                if mdl.is_recommend:
+                    prefer = 1
         try:
-            mdl = Subject.select().where(Subject.id==model.subject_id).get()
+            mdl = Subject.select().where(Subject.id==pid).get()
             if mdl.status in (-1, 0):
                 return 0
             if mdl.source not in self.source:
                 return 0
-            #koubeiPostCount, groupPostCount, fineCount, firstPostId
+            if self.titPic:
+                if not mdl.title and not mdl.image_url:
+                    return 0
+            #postCount, fineCount, firstPostId
             if mdl.user_id not in self.info:
                 self.info[mdl.user_id] = [0, 0, mdl.id]
+                self.detail[mdl.user_id] = {}
+                self.userActive[mdl.user_id] = {}
             self.info[mdl.user_id][0] += 1
-            if mdl.is_fine:
-                self.info[mdl.user_id][2] += 1
+            zan = KoubeiZan.select().where(KoubeiZan.subject_id==pid).count()
+            self.detail[mdl.user_id][pid] = zan
+            self.info[mdl.user_id][1] += prefer
+            if model.label_id not in self.userActive[mdl.user_id]:
+                self.userActive[mdl.user_id][model.label_id] = [0, 0, 0]
+            self.userActive[mdl.user_id][model.label_id][0] += 1
+            self.userActive[mdl.user_id][model.label_id][1] += prefer
         except:
             return 0
         return 1
 
-    def writeData(self, fp, uid, stat):
-        mdl = Subject.select().where((Subject.user_id==uid)&(Subject.status.not_in([-1, 0]))).order_by(Subject.id).limit(1).get()
-        if mdl.id == stat[2]:
-            stat[2] = mdl.source
+    def writeData(self, uid, stat):
+        model = Subject.select().where((Subject.user_id==uid)&(Subject.status.not_in([-1, 0]))).order_by(Subject.id).limit(1).get()
+        if model.id == stat[2]:
+            stat[2] = model.source
         else:
             stat[2] = 0
         mdl = User.select().where(User.id==uid).get()
-        fp.write('%s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, stat[0], stat[1], stat[2]))
-        
+        for i, fp in enumerate(self.fpList):
+            if i == 0:
+                fp.write('%s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, stat[0], stat[1], stat[2]))
+            elif i == 1:
+                if stat[0] < 5:
+                    return
+                try:
+                    addr = Address.select().where((Address.user_id==uid)&(Address.is_default==1)).get()
+                    prov = Prov.select().where(Prov.id==addr.prov).get()
+                    city = City.select().where(City.id==addr.city).get()
+                    area = Area.select().where(Area.id==addr.area).get()
+                    fp.write('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, mdl.cell_phone, addr.name, prov.name, city.name, area.name, addr.address, stat[0], stat[1], stat[2]))
+                except:
+                    fp.write('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, mdl.cell_phone, '', '', '', '', '', stat[0], stat[1], stat[2]))
+            elif i == 2:
+                for pid, zan in self.detail[uid].iteritems():
+                    fp.write('%s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, pid, zan))
+            elif i == 3:
+                active = self.userActive[uid]
+                if stat[2] > 0:#first post
+                    mdls = Label.select().where(Label.subject_id==model.id)
+                    for m in mdls:
+                        if m.label_id in active:
+                            active[m.label_id][2] = stat[2]
+                for lid, stat in active.iteritems():
+                    fp.write('%s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, lid, self.labelInfo[lid], stat[0], stat[1], stat[2]))
+                    
     def finish(self):
-        fp = open('data/%s-%s.csv'%(self.__class__.__name__, self.labelId), 'w')
+        for i in range(2):
+            path = 'data/stat-%s-%s-%s.csv'%(self.labelId[0], ','.join(map(str, self.source)), i)
+            fp = open(path, 'w')
+            self.fpList.append(fp)
         for uid, stat in self.info.iteritems():
-            self.writeData(fp, uid, stat)
+            self.writeData(uid, stat)
+        for fp in self.fpList:
+            fp.close()
+
+class QualityPost(Editor):
+    def loadData(self):
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        yyday = today - datetime.timedelta(days=2)
+        dateStr = yday.strftime('%Y%m%d')
+        if self.checkPoint == int(today.strftime('%Y%m%d')):
+            return []
+        redis = RedisUtil(env='online')
+        path = 'data/user-action-%s'%dateStr
+        result = {}
+        count = 0
+        for line in open(path):
+            count += 1
+            if count%100 == 0:
+                logging.info('Processed %s'%count)
+            li = line[:-1].split('\t')
+            skuId = li[1]
+            key = 'koubei:rank_score:%s'%skuId
+            ranked = redis.get_obj(key)
+            if not ranked:
+                continue
+            for pid, score in ranked:
+                if score < 33:#not good
+                    continue
+                mdl = Subject.select(Subject.text, Subject.image_url).where(Subject.id==pid).get()
+                if not mdl.image_url:
+                    continue
+                pics = mdl.image_url.split('#')
+                if len(pics) > 1 and len(mdl.text) > 100:
+                    mdl = Koubei.select(Koubei.machine_score).where(Koubei.subject_id==pid).get()
+                    if not mdl.machine_score:
+                        mscore = 2
+                    else:
+                        mscore = int(mdl.machine_score)
+                    if not mdl.score:
+                        uscore = 5
+                    else:
+                        uscore = int(mdl.score)
+                    if mscore > 1 and uscore > 3:
+                        if skuId not in result:
+                            result[skuId] = []
+                        result[skuId].append((pid, len(pics)))
+                if skuId in result and len(result[skuId]) > 9:
+                    break
+        fp = open('data/quality-koubei-%s'%dateStr, 'w')
+        fpAll = open('data/quality-koubei', 'a')
+        resAll = set()
+        for line in open('data/quality-koubei'):
+            li = line[:-1].split('\t')
+            resAll.add('%s,%s'%(li[0], li[1]))
+        for skuId, qkbs in result.iteritems():
+            for qkb in qkbs:
+                k = '%s,%s'%(skuId, qkb[0])
+                if k in resAll:
+                    continue
+                link = 'https://m.miyabaobei.com/wx/group_detail/%s.html'%qkb[0]
+                ctn = '%s\t%s\t%s\t%s\n'%(skuId, qkb[0], qkb[1], link)
+                fp.write(ctn)
+                fpAll.write(ctn)
         fp.close()
+        fpAll.close()
+        self.checkPoint = int(today.strftime('%Y%m%d'))
+        return []
 
-class ActiveData2(ActiveData):
-    labelId = 23850
-    exclude = []
-    source = (1,)
-    startDate = '20170522'
-    endDate = '20170526'
+class TargetUser(Editor):
+    def loadData(self):
+        #testUser = set([17098259, 1989786, 17781443, 1956003, 6983751, 14534392, 16214363, 1592304, 17740945, 17783579, 17863520, 17805220, 3194289, 17739659, 17752264, 17711622, 16041415, 17536197])
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        date = today - datetime.timedelta(days=7)
+        if self.checkPoint == int(today.strftime('%Y%m%d')):
+            return []
+        self.rds = redis.StrictRedis(host = '10.1.52.187')
+        self.policy = {}
+        self.pushCount = 0
+        info = {}
+        count = 0
+        while True:
+            dateStr = date.strftime('%Y%m%d')
+            path = 'data/sku-event-%s/'%dateStr
+            if not os.path.exists(path):
+                os.mkdir(path)
+            if not os.path.exists(path+'part-00000'):
+                os.system('hadoop fs -get /search/parsed_data/%s/sku/part* %s'%(dateStr, path))
+            if not os.path.exists(path+'part-00000'):
+                return []
+            dvcSet = set()
+            for fname in os.listdir(path):
+                if fname[:4] != 'part':
+                    continue
+                logging.info('Process %s'%(path+fname))
+                for line in open(path+fname):
+                    li = line.split(', ')
+                    dvcId = li[0][3:-1]
+                    ts = int(li[2][2:-1])/1000
+                    skuId = li[4][2:-1]
+                    typ = int(li[5])
+                    if typ in (2, 4):
+                        if dvcId not in info:
+                            info[dvcId] = {'active':0}
+                        if skuId not in info[dvcId]:
+                            count += 1
+                            info[dvcId][skuId] = ''
+                        dt = datetime.datetime.fromtimestamp(ts)
+                        info[dvcId][skuId] += '(%s,%s)'%(typ, dt.strftime('%Y-%m-%d %H:%M:%S'))
+                    if dvcId in info and dvcId not in dvcSet:#count user active days
+                        info[dvcId]['active'] += 1
+                        dvcSet.add(dvcId)
+            if date == yday:
+                break
+            date += datetime.timedelta(days=1)
+        path = 'data/quality-koubei.csv'
+        quality = {}
+        for line in open(path):
+            li = line[:-1].split(',')
+            skuId = li[0]
+            if skuId not in quality:
+                quality[skuId] = [1]
+            quality[skuId].append((li[1], li[4].decode('gbk')))
+        path = '/opt/parsed_data/mapping/id_did_mapping.txt'
+        mapping = json.loads(open(path).read())
+        for uid, dvcIds in mapping.iteritems():
+            for dvcId in dvcIds:
+                if dvcId in info:
+                    info[dvcId]['uid'] = uid
 
-class ActiveData3(ActiveData2):
-    exclude = (19557, 21734)
-    def writeData(self, fp, uid, stat):
-        if stat[0] < 5:
-            return
-        mdl = Subject.select().where((Subject.user_id==uid)&(Subject.status.not_in([-1, 0]))).order_by(Subject.id).limit(1).get()
-        if mdl.id == stat[2]:
-            stat[2] = mdl.source
-        else:
-            stat[2] = 0
-        mdl = User.select().where(User.id==uid).get()
-        try:
-            addr = Address.select().where((Address.user_id==uid)&(Address.is_default==1)).get()
-            prov = Prov.select().where(Prov.id==addr.prov).get()
-            city = City.select().where(City.id==addr.city).get()
-            area = Area.select().where(Area.id==addr.area).get()
-            fp.write('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.nickname, mdl.cell_phone, addr.name, prov.name, city.name, area.name, addr.address, stat[0], stat[1], stat[2]))
-        except:
-            fp.write('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.nickname, mdl.cell_phone, '', '', '', '', '', stat[0], stat[1], stat[2]))
+        orderDate = today - datetime.timedelta(days=14)
+        dateStr = orderDate.strftime('%Y%m%d')
+        count = 0
+        fp = open('data/user-action-%s'%yday.strftime('%Y%m%d'), 'w')
+        for dvcId, eles in info.iteritems():
+            count += 1
+            if count%1000 == 0:
+                logging.info('Processed %s/%s'%(count, len(info)))
+            if 'uid' not in eles:
+                continue
+            uid = int(eles.pop('uid'))
+            active = eles.pop('active')
+            if active < 3:#no push to unactive user
+                continue
+            mdls = Order.select(Order.id, Order.user_id, OrderItems.item_id).join(OrderItems, on=(Order.id==OrderItems.order_id).alias('item')).where((Order.order_time>dateStr)&(Order.status>1)&(Order.user_id==uid))
+            for mdl in mdls:
+                skuId = str(mdl.item.item_id)
+                if skuId in eles:
+                    del eles[skuId]
+            for skuId, action in eles.iteritems():
+                if skuId in quality:#may push
+                    self.policyPush(uid, skuId, action, quality[skuId], dvcId)
+#                    fp.write('%s\t%s\t%s\t%s\n'%(uid, skuId, action, str(quality[skuId])))
+                #fp.write('%s\t%s\t%s\n'%(uid, skuId, action))
+        fp.close()
+        self.checkPoint = int(today.strftime('%Y%m%d'))
+        logging.info('Pushed %s'%self.pushCount)
+        return []
+
+    def policyPush(self, uid, skuId, action, goodPosts, dvcId):
+        idx = goodPosts[0]
+        pid = goodPosts[idx][0]
+        text = goodPosts[idx][1]
+        today = datetime.date.today()
+        dateStr = today.strftime('%Y-%m-%d')
+        mdl = PushLog.select().where((PushLog.uid==uid)&((PushLog.skuid==skuId)|(PushLog.pid==pid)|(PushLog.created>dateStr)))
+        if len(mdl) > 0:#have pushed
+            return False
+        dateStr = today.strftime('%Y%m%d')
+        info = {
+            'user_id':int(uid),
+            'content':text,
+            'url':'miyabaobei://subject?id=%s&push=personalized_post-%s-%s'%(pid, dateStr, int(time.time()))
+        }
+        self.rds.lpush('app_custom_push_list', json.dumps(info))
+        pushInto(PushLog, {'uid':uid, 'skuid':skuId,'pid':pid, 'dvcid':dvcId, 'action':action, 'content':text})
+        goodPosts[0] = idx = idx+1
+        if idx == len(goodPosts):
+            goodPosts[0] = idx = 1
+        self.pushCount += 1
+        return True
+
+class PushStat(Editor):
+    def loadData(self):
+        pushCtr = {}
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        mdls = PushLog.select().where((PushLog.created>yday.strftime('%Y-%m-%d'))&(PushLog.created<today.strftime('%Y-%m-%d')))
+        for mdl in mdls:
+            if mdl.pid not in pushCtr:
+                #expose ios, android, click ios, android, ctr ios, android, total ctr
+                pushCtr[mdl.pid] = [0, 0, 0, 0, 0, 0, 0, mdl.content]
+            if mdl.dvcid.find('-') > 0:
+                pushCtr[mdl.pid][0] += 1
+            else:
+                pushCtr[mdl.pid][1] += 1
+        path = '/opt/parsed_data/personalized_post/%s/push_clicked_format.txt'%yday.strftime('%Y%m%d')
+        for line in open(path):
+            li = line.split('\t')
+            dvcId = li[1]
+            pid = int(li[2])
+            if pid not in pushCtr:
+                pushCtr[pid] = [0, 0, 0, 0, 0, 0, 0, '']
+            if dvcId.find('-') > 0:
+                pushCtr[pid][2] += 1
+            else:
+                pushCtr[pid][3] += 1
+
+        fp = open('data/pushstat-%s.csv'%yday.strftime('%Y%m%d'),'w')
+        for pid, stat in pushCtr.iteritems():
+            stat[4] = calcCrt(stat[2], stat[0])
+            stat[5] = calcCrt(stat[3], stat[1])
+            stat[6] = calcCrt(stat[2]+stat[3], stat[0]+stat[1])
+            ctn = '%s,%s\n'%(pid, ','.join(map(str, stat[:7])))
+            fp.write(ctn)
+        fp.close()
+        return []
+import zlib
+class Abtest(Editor):
+    def loadData(self):
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        path = 'data/click-%s/part-00000'%yday.strftime('%Y%m%d')
+        clicka = 0
+        clickb = 0
+        for line in open(path):
+            idx = line.find("',")
+            li = line[3:idx].split('_')
+            num = line[idx+2:-2]
+            pid = li[0]
+            _type = li[1]
+            dvcId = li[2]
+            if _type != 'koubeilist':
+                continue
+            hint = zlib.crc32(dvcId)&0xffffffff
+            left = hint % 10
+            if left < 7:
+                clicka += int(num)
+            else:
+                clickb += int(num)
+    
+        print (clickb/3 - clicka/7)/float(clicka/7)
+        return []
