@@ -142,7 +142,7 @@ def calcCrt(click, expose):
     if click == 0 or expose == 0:
         return 0
     elif expose < click:
-        return 0.99
+        click = expose
     p = min(float(click)/expose, 0.95)
     n = expose
     z = 1.96
