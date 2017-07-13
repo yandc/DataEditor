@@ -1382,7 +1382,7 @@ class DailyExpose3(Editor):
                     if not expose:
                         continue
                     eles = json.loads(expose)
-                    if len(eles) > 2 and type(eles[-2]) == unicode:
+                    if len(eles) > 2 and type(eles[-2]) == unicode:#dvcId
                         mdls = Koubei.select(Koubei.subject_id).where(Koubei.id<<eles[:-2])
                     else:
                         mdls = Koubei.select(Koubei.subject_id).where(Koubei.id<<eles)
@@ -1401,7 +1401,39 @@ class DailyExpose3(Editor):
             date += datetime.timedelta(days=1)
         self.checkPoint = int(today.strftime('%Y%m%d'))
         return []
-            
+#push的点击率
+class DailyExpose4(Editor):
+    def loadData(self):
+        today = datetime.date.today()
+        yday = today - datetime.timedelta(days=1)
+        dateStr = yday.strftime('%Y%m%d')
+        if self.checkPoint == int(today.strftime('%Y%m%d')):
+            return []
+        mdls = PushLog.select().where(PushLog.created>dateStr)
+        pushCtr = {}
+        for mdl in mdls:
+            if mdl.dvcid.find('-') > 0:
+                continue
+            if mdl.pid not in pushCtr:
+                pushCtr[mdl.pid] = [0, 0, 0]
+            pushCtr[mdl.pid][1] += 1
+        path = '/opt/parsed_data/personalized_post/%s/push_clicked_format.txt'%dateStr
+        for line in open(path):
+            li = line.split('\t')
+            if li[1].find('-') > 0:
+                continue
+            pid = int(li[2])
+            if pid not in pushCtr:
+                continue
+            pushCtr[pid][0] += 1
+        fp = open('/opt/parsed_data/ctr/push-%s'%dateStr, 'w')
+        for pid, stat in pushCtr.iteritems():
+            stat[2] = calcCrt(stat[0], stat[1])
+            fp.write('%s\t%s\t%s\t%s\n'%(pid, stat[0], stat[1], stat[2]))
+        fp.close()
+        self.checkPoint = int(today.strftime('%Y%m%d'))
+        return []
+
 #曝光，点击，点击率，普通、达人比较
 class PostUniform(Editor):
     def loadData(self):
@@ -1557,29 +1589,29 @@ class CollectCtr(Editor):
         kblAccCtr = {}
         today = datetime.date.today()
         yday = today - datetime.timedelta(days=1)
-        date = yday
+        date = today - datetime.timedelta(days=30)
         if self.checkPoint == int(today.strftime('%Y%m%d')):
             return []
-        if os.path.exists(accPath):
-            for line in open(accPath):
-                li = line[:-1].split('\t')
-                li[3] = 0
-                li[6] = 0
-                pid = int(li[0])
-                accCtr[pid] = [int(x) for x in li[1:]]
-        if os.path.exists(itemAccPath):
-            for line in open(itemAccPath):
-                li = line[:-1].split('\t')
-                ppid = li[0]
-                pid = li[1]
-                if ppid not in itemAccCtr:
-                    itemAccCtr[ppid] = {}
-                itemAccCtr[ppid][pid] = [int(li[2]), int(li[3]), float(li[4])]
-        if os.path.exists(kblAccPath):
-            for line in open(kblAccPath):
-                li = line[:-1].split('\t')
-                pid = li[0]
-                kblAccCtr[pid] = [int(li[1]), int(li[2]), 0]
+#        if os.path.exists(accPath):
+#            for line in open(accPath):
+#                li = line[:-1].split('\t')
+#                li[3] = 0
+#                li[6] = 0
+#                pid = int(li[0])
+#                accCtr[pid] = [int(x) for x in li[1:]]
+#        if os.path.exists(itemAccPath):
+#            for line in open(itemAccPath):
+#                li = line[:-1].split('\t')
+#                ppid = li[0]
+#                pid = li[1]
+#                if ppid not in itemAccCtr:
+#                    itemAccCtr[ppid] = {}
+#                itemAccCtr[ppid][pid] = [int(li[2]), int(li[3]), float(li[4])]
+#        if os.path.exists(kblAccPath):
+#            for line in open(kblAccPath):
+#                li = line[:-1].split('\t')
+#                pid = li[0]
+#                kblAccCtr[pid] = [int(li[1]), int(li[2]), 0]
 
         while True:
             dateStr = date.strftime('%Y%m%d')
@@ -1588,6 +1620,7 @@ class CollectCtr(Editor):
             kblPath = '/opt/parsed_data/ctr/kblist-%s'%dateStr
             if not os.path.exists(path) or not os.path.exists(itemPath) or not os.path.exists(kblPath):
                 return []
+            logging.info('Process %s ctr'%dateStr)
             for line in open(path):
                 li = line[:-1].split('\t')
                 li[3] = 0
@@ -1824,7 +1857,14 @@ class KoubeiScore(Editor):
     def calcRanked(self, itemId, mdls, incFlag=False):
         subjects = Subject.select().where(Subject.id<<[x.subject_id for x in mdls])
         subDict = {}
+        dedup = {}
         for sub in subjects:
+            if sub.user_id not in dedup:
+                dedup[sub.user_id] = set()
+            md5 = hashlib.md5(sub.text+sub.image_url).hexdigest()
+            if md5 in dedup[sub.user_id]:
+                continue
+            dedup[sub.user_id].add(md5)
             subDict[sub.id] = sub
         for stagy in self.strategy:
             rankScore = {}
@@ -1839,6 +1879,8 @@ class KoubeiScore(Editor):
                         rankScore[kbid] = score
             for mdl in mdls:
                 pid = mdl.subject_id
+                if pid not in subDict:
+                    continue
                 kbid = mdl.id
                 score = self.getScore(mdl, subDict[pid], stagy)
                 rankScore[kbid] = score
@@ -1915,6 +1957,7 @@ class UserFeature(Editor):
         logging.info('Access count: %s, bucket count: %s'%(accCount, bktCount))
         dvcBkt.dump(targetPath)
         os.system('cp %s %s'%(targetPath, '/opt/parsed_data/bucket/final_good_post.txt'))
+        del dvcBkt
         return []
 
 #缺少评价sku统计
@@ -2012,14 +2055,13 @@ class KbrankMonitor(Editor):
         return []
 #活动结束用户数据统计
 class ActiveData(Editor):
-    #labelId = [17150,17064,17051,17231,17235,17402,17533,17401,17403,17400,1845 ,2084 ,17798,17794,17792,17793,18735,17881,19198,20506,23566,21807,21810,21806,21808,21817,23558,23563,23570,25291,25287,17918,25276,25279,25074,25996,25999,25994,26004,26495,26482,26486,26481,26575,26593,26595,26598,25986,22056,26013,26755,18265,19973,21734,24800,25500,26322,16738,17260,20933,23850,26052,26416]
-    labelId = [23850]
-    exclude = []
-    source = (2,)
+    labelId = [27595]
+    exclude = [19557, 23850, 28266, 27838]
+    source = (1,)
     titPic = False
-    startDate = '20170612'
-    endDate = '20170630'
-    countLimit = 0
+    startDate = '20170626'
+    endDate = '20170703'
+    countLimit = 5
     info = {}
     detail = {}
     fpList = []
@@ -2188,11 +2230,17 @@ class QualityPost(Editor):
         return []
 
 class TargetUser(Editor):
+    templates = [
+        '你感兴趣的【%s】已经有人败了，快过来看看这位妈妈怎么说',
+        '还在纠结要不要入【%s】？有人已经快你一步下手了，她有话对你说→',
+        '嘿~暗中观察你很久了！知道这件宝贝【%s】你很心水，来看别人怎么评价它吧！',
+        '我等的花儿都谢了~从你关注【%s】至今已有两个世纪，为什么还没下单？这个理由够不够？'
+    ]
+    tmpIdx = 0
     def loadData(self):
-        #testUser = set([17098259, 1989786, 17781443, 1956003, 6983751, 14534392, 16214363, 1592304, 17740945, 17783579, 17863520, 17805220, 3194289, 17739659, 17752264, 17711622, 16041415, 17536197])
         today = datetime.date.today()
         yday = today - datetime.timedelta(days=1)
-        date = today - datetime.timedelta(days=1)
+        date = today - datetime.timedelta(days=7)
         if self.checkPoint == int(today.strftime('%Y%m%d')):
             return []
         self.rds = redis.StrictRedis(host = '10.1.52.187')
@@ -2257,7 +2305,10 @@ class TargetUser(Editor):
                 logging.info('Processed %s/%s'%(count, len(info)))
             if dvcId not in mapping:
                 continue
-            uid = int(mapping[dvcId])
+            try:
+                uid = int(mapping[dvcId])
+            except:
+                continue
             active = eles.pop('active')
 #            if active < 3:#no push to unactive user
 #                continue
@@ -2311,7 +2362,9 @@ class TargetUser(Editor):
             try:
                 mdl = Koubei.select().where(Koubei.subject_id==pid).get()
                 mdl = RelateSku.select().where(RelateSku.id==mdl.item_id).get()
-                template = '你感兴趣的【%s】已经有人败了，快过来看看这位妈妈怎么说'
+                idx = self.tmpIdx % len(self.templates)
+                template = self.templates[idx]
+                self.tmpIdx += 1
                 if mdl.activity_short_title:
                     text = template%mdl.activity_short_title
                 else:
@@ -2330,10 +2383,12 @@ class TargetUser(Editor):
         if len(mdl) > 0:#have pushed today
             return 0
         if skuId in self.quality:
+            source = 'quality'
             pid, text = self.getPushFromQuality(uid, skuId)
             if not pid:
                 return 2#next skuId
         else:
+            source = 'recommend'
             pid, text = self.getPushFromRec(uid, dvcId, dateStr)
             if not pid:
                 return 0
@@ -2345,7 +2400,7 @@ class TargetUser(Editor):
             'url':'miyabaobei://subject?id=%s&push=personalized_post-%s-%s'%(pid, dateStr, int(time.time()))
         }
         self.rds.lpush('app_custom_push_list', json.dumps(info))
-        pushInto(PushLog, {'uid':uid, 'skuid':skuId,'pid':pid, 'dvcid':dvcId, 'action':str(action), 'content':text})
+        pushInto(PushLog, {'uid':uid, 'skuid':skuId,'pid':pid, 'dvcid':dvcId, 'action':str(action), 'content':text, 'source':source})
         self.pushCount += 1
         return 1
 
@@ -2389,26 +2444,35 @@ class Abtest(Editor):
     def loadData(self):
         today = datetime.date.today()
         yday = today - datetime.timedelta(days=1)
-        path = 'data/click-%s/part-00000'%yday.strftime('%Y%m%d')
-        clicka = 0
-        clickb = 0
-        for line in open(path):
-            idx = line.find("',")
-            li = line[3:idx].split('_')
-            num = line[idx+2:-2]
-            pid = li[0]
-            _type = li[1]
-            dvcId = li[2]
-            if _type != 'koubeilist':
-                continue
-            hint = zlib.crc32(dvcId)&0xffffffff
-            left = hint % 10
-            if left < 7:
-                clicka += int(num)
-            else:
-                clickb += int(num)
-    
-        print clicka, clickb, (clickb/3 - clicka/7)/float(clicka/7)
+        date = yday - datetime.timedelta(days=5)
+        while True:
+            path = 'data/click-%s/part-00000'%date.strftime('%Y%m%d')
+            clicka = 0
+            clickb = 0
+            dvcSeta = set()
+            dvcSetb = set()
+            for line in open(path):
+                idx = line.find("',")
+                li = line[3:idx].split('_')
+                num = line[idx+2:-2]
+                pid = li[0]
+                _type = li[1]
+                dvcId = li[2]
+                if _type != 'koubeilist':
+                    continue
+                hint = zlib.crc32(dvcId)&0xffffffff
+                left = hint % 10
+                if left < 7:
+                    dvcSeta.add(dvcId)
+                    clicka += int(num)
+                else:
+                    dvcSetb.add(dvcId)
+                    clickb += int(num)
+        
+            print clicka, clickb, round(float(clicka)/len(dvcSeta), 4), round(float(clickb)/len(dvcSetb), 4), round((clickb/3 - clicka/7)/float(clicka/7), 4)
+            if date == yday:
+                break
+            date += datetime.timedelta(days=1)
         return []
 
 class TopStat(Editor):
@@ -2430,4 +2494,72 @@ class TopStat(Editor):
             fp.write('%s, %s, %s, %s\n'%(mdl.item_id, name, catgy, mdl.kbcount))
         fp.close()
         return []
-            
+class TopStat2(Editor):
+    def loadData(self):
+        #level1Catgy = [10011,15512,10006,10017,15511,15509]
+        level1Catgy = [10026]
+        catgySet = set()
+        for catgy in level1Catgy:
+            like = str(catgy)+'%'
+            mdls = ItemCatgy2.select().where(ItemCatgy2.path%like)
+            for mdl in mdls:
+                for catgy in mdl.path.split('-'):
+                    catgySet.add(int(catgy))
+        skuDict = {}
+        mdls = RelateSku.select(RelateSku.id, RelateSku.name).where(RelateSku.category_id_ng<<list(catgySet))
+        for mdl in mdls:
+            skuDict[mdl.id] = [mdl.name, 0]
+        for skuId, stat in skuDict.iteritems():
+            mdl = Koubei.select(fn.COUNT(Koubei.id).alias('kbcount')).where(Koubei.item_id==skuId).get()
+            skuDict[skuId][1] = mdl.kbcount
+        ranked = sorted(skuDict.iteritems(), key=lambda x:x[1][1], reverse=True)
+        fp = open('data/topkoubeisku-%s.csv'%level1Catgy[0], 'w')
+        for skuId, stat in ranked[:2000]:
+            fp.write('%s, %s, %s\n'%(skuId, stat[0], stat[1]))
+        fp.close()
+        return []
+class TopStat3(Editor):
+    batchSize = 10000
+    userDict = {}
+    def loadCheckPoint(self):
+        self.checkPoint = 0
+    def loadData(self):
+        return Subject.select().where((Subject.id>self.checkPoint)&(Subject.created>'20170101')&(Subject.status==1)).order_by(Subject.id).limit(self.batchSize)
+    def edit(self, model):
+        if model.user_id not in self.userDict:
+            self.userDict[model.user_id] = 0
+        self.userDict[model.user_id] += 1
+        return 1
+    def finish(self):
+        addrStat = {}
+        for uid, count in self.userDict.iteritems():
+            try:
+                addr = Address.select().where((Address.user_id==uid)&(Address.is_default==1)).get()
+                if addr.prov not in addrStat:
+                    prov = Prov.select().where(Prov.id==addr.prov).get()
+                    addrStat[addr.prov] = [prov.name, 0]
+                addrStat[addr.prov][1] += count
+            except:
+                continue
+        ranked = sorted(addrStat.iteritems(), key=lambda x:x[1][1], reverse=True)
+        fp = open('data/topkoubeiprov.csv', 'w')
+        for provid, stat in ranked:
+            fp.write('%s, %s, %s\n'%(provid, stat[0], stat[1]))
+        fp.close()
+                
+class UserAddr(Editor):
+    def loadData(self):
+        fp = open('data/useraddr.csv', 'w')
+        for line in open('data/tmp.txt'):
+            uid = int(line[:-1])
+            try:
+                mdl = User.select().where(User.id==uid).get()
+                addr = Address.select().where((Address.user_id==uid)&(Address.is_default==1)).get()
+                prov = Prov.select().where(Prov.id==addr.prov).get()
+                city = City.select().where(City.id==addr.city).get()
+                area = Area.select().where(Area.id==addr.area).get()
+                fp.write('%s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, mdl.cell_phone, addr.name, prov.name, city.name, area.name, addr.address))
+            except:
+                continue
+        fp.close()
+        return []
