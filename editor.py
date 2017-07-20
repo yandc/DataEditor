@@ -1852,6 +1852,8 @@ class KoubeiScore(Editor):
         pid = mdl.subject_id
         if mdl.auto_evaluate and int(mdl.auto_evaluate) == 1:
             return [15]
+        if mdl.is_bottom == 1:
+            return [0]
         if not mdl.score:
             uscore = 5
         else:
@@ -2085,12 +2087,13 @@ class KbrankMonitor(Editor):
         return []
 #活动结束用户数据统计
 class ActiveData(Editor):
-    labelId = [23850]
-    exclude = [23850, 28933, 29410, 29456, 28298, 27838]
-    source = (1,2)
+    labelId = [27938]
+    exclude = [19557, 23850, 29292, 27838]
+    source = (1,)
+    output = (0, 1)
     titPic = False
-    startDate = '20170719'
-    endDate = '20170720'
+    startDate = '20170703'
+    endDate = '20170710'
     countLimit = 0
     info = {}
     detail = {}
@@ -2160,7 +2163,7 @@ class ActiveData(Editor):
         for i, finfo in self.fpList.items():
             fp = finfo[1]
             if i == 0:
-                fp.write(('%s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, stat[0], stat[1], stat[2])).encode('gbk'))
+                fp.write('%s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, stat[0], stat[1], stat[2]))
             elif i == 1:
                 if stat[0] < self.countLimit:
                     return
@@ -2169,12 +2172,12 @@ class ActiveData(Editor):
                     prov = Prov.select().where(Prov.id==addr.prov).get()
                     city = City.select().where(City.id==addr.city).get()
                     area = Area.select().where(Area.id==addr.area).get()
-                    fp.write(('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, mdl.cell_phone, addr.name, prov.name, city.name, area.name, addr.address, stat[0], stat[1], stat[2])).encode('gbk'))
+                    fp.write('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, mdl.cell_phone, addr.name, prov.name, city.name, area.name, addr.address, stat[0], stat[1], stat[2]))
                 except:
-                    fp.write(('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, mdl.cell_phone, '', '', '', '', '', stat[0], stat[1], stat[2])).encode('gbk'))
+                    fp.write('%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, mdl.cell_phone, '', '', '', '', '', stat[0], stat[1], stat[2]))
             elif i == 2:
                 for pid, zan in self.detail[uid].iteritems():
-                    fp.write(('%s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, pid, zan)).encode('gbk'))
+                    fp.write('%s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, pid, zan))
             elif i == 3:
                 active = self.userActive[uid]
                 if stat[2] > 0:#first post
@@ -2183,10 +2186,10 @@ class ActiveData(Editor):
                         if m.label_id in active:
                             active[m.label_id][2] = stat[2]
                 for lid, stat in active.iteritems():
-                    fp.write(('%s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, lid, self.labelInfo[lid], stat[0], stat[1], stat[2])).encode('gbk'))
+                    fp.write('%s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, lid, self.labelInfo[lid], stat[0], stat[1], stat[2]))
                     
     def finish(self):
-        for i in range(1):
+        for i in self.output:
             path = 'data/stat-%s-%s-%s.csv'%(self.labelId[0], ','.join(map(str, self.source)), i)
             fp = open(path, 'w')
             self.fpList[i] = [path, fp]
@@ -2195,7 +2198,7 @@ class ActiveData(Editor):
         for typ in self.fpList:
             self.fpList[typ][1].close()
         title = '【活动数据调取】'
-        addr = ['yandechen@mia.com', 'wangrui@mia.com']
+        addr = ['yandechen@mia.com']
         mail = EmailUtil('exmail.qq.com', 'miasearch@mia.com', 'HelloJack123')
         files = [finfo[0] for typ, finfo in self.fpList.items()]
         mail.sendEmail(addr, title, files=files)
@@ -2204,6 +2207,7 @@ class ActiveData2(ActiveData):
     labelId = [24]
     exclude = [23850, 28933, 29410, 29456, 28298, 27838]
     source = (1,2)
+    output = (0,)
     startDate = '20170715'
     endDate = '20170720'
     def loadInitData(self):
