@@ -1352,7 +1352,7 @@ class DailyExpose2(Editor):
 class DailyExpose3(Editor):
     def getStrategy(self, dvcId):
         strategy = 0
-        abTest = [3, 7]
+        abTest = [0, 10]
         if abTest:
             hint = zlib.crc32(dvcId)&0xffffffff
             left = hint % sum(abTest)
@@ -1851,7 +1851,7 @@ class KoubeiScore(Editor):
     def getScore(self, mdl, sub, stagy=0):
         pid = mdl.subject_id
         if mdl.auto_evaluate and int(mdl.auto_evaluate) == 1:
-            return 15
+            return [15]
         if not mdl.score:
             uscore = 5
         else:
@@ -1874,10 +1874,11 @@ class KoubeiScore(Editor):
         else:
             click = 1
         positive = uscore + mscore - 2
-        score = positive*5+len(pics)*3+min(textLen/20,10)+round(math.log(click)-0.25*(datetime.date.today()-ctime.date()).days/30, 2)
+        pastDays = (datetime.date.today()-ctime.date()).days
+        score = positive*5+len(pics)*3+min(textLen/20,10)+round(math.log(click)-0.25*pastDays/30, 2)
         if stagy==1 and sub.image_url and positive>4 and pid in self.postCtr:#abtest
             score += 100*self.postCtr[pid]
-        return score
+        return [score, positive, len(pics), textLen, click-1, pastDays]
 
     def calcRanked(self, itemId, mdls, incFlag=False):
         subjects = Subject.select().where(Subject.id<<[x.subject_id for x in mdls])
@@ -1900,7 +1901,10 @@ class KoubeiScore(Editor):
             if incFlag:
                 ranked = self.redis.get_obj(key)
                 if ranked:
-                    for kbid, score in ranked:
+                    for scinfo in ranked:
+                        pdb.set_trace()
+                        kbid = scinfo[0]
+                        score = scinfo[1:]
                         rankScore[kbid] = score
             for mdl in mdls:
                 pid = mdl.subject_id
@@ -1912,7 +1916,8 @@ class KoubeiScore(Editor):
     
             if len(rankScore) == 0:
                 return 0
-            ranked = sorted(rankScore.iteritems(), key=lambda x:x[1], reverse=True)
+            sortList = [[kbid]+score for kbid, score in rankScore.iteritems()]
+            ranked = sorted(sortList, key=lambda x:x[1], reverse=True)
             #save into redis
             self.redis.set_obj(key, ranked)
         return 1
@@ -2084,8 +2089,8 @@ class ActiveData(Editor):
     exclude = [23850, 28933, 29410, 29456, 28298, 27838]
     source = (1,2)
     titPic = False
-    startDate = '20170718'
-    endDate = '20170719'
+    startDate = '20170719'
+    endDate = '20170720'
     countLimit = 0
     info = {}
     detail = {}
@@ -2197,6 +2202,10 @@ class ActiveData(Editor):
 
 class ActiveData2(ActiveData):
     labelId = [24]
+    exclude = [23850, 28933, 29410, 29456, 28298, 27838]
+    source = (1,2)
+    startDate = '20170715'
+    endDate = '20170720'
     def loadInitData(self):
         mdls = UserRole.select().where(UserRole.role_id==self.labelId[0])
         self.userId = [x.user_id for x in mdls]
@@ -2630,8 +2639,14 @@ class UserAddr(Editor):
 from picview import *
 class PicView(Editor):
     def loadData(self):
-        return Subject.select().where((Subject.id>self.checkPoint)&(Subject.created>'2017-07')).order_by(Subject.id).limit(self.batchSize)
+        return Subject.select().where((Subject.id>self.checkPoint)&(Subject.created>'2017-07-10')).order_by(Subject.id).limit(self.batchSize)
+#        return Subject.select().where((Subject.id>self.checkPoint)&(Subject.id==12164284)).order_by(Subject.id).limit(self.batchSize)
     def edit(self, model):
+        try:
+            mdl = PicFeature.select().where(PicFeature.pid==model.id).get()
+            return 0
+        except:
+            pass
         if model.image_url:
             pics = model.image_url.split('#')
         else:
@@ -2639,4 +2654,5 @@ class PicView(Editor):
         for i, pic in enumerate(pics):
             link = 'http://img05.miyabaobei.com'+pic
             clarity, bright = getPicFeatureFromUrl(link)
-            pushInto(PicFeature, {'pid':model.id, 'idx':i, 'bright':bright, 'clarity':clarity}, ['pid', 'idx'])
+            pushInto(PicFeature, {'pid':model.id, 'idx':i, 'bright':bright, 'clarity':clarity*100}, ['pid', 'idx'])
+        return 1
