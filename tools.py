@@ -151,3 +151,72 @@ def calcCrt(click, expose):
     b = 1+z2/n
     return round(a/b, 4)
     
+templates = [
+    ('跟你一起关注%name的人早就下单且美得不可方物，愿意接受这样的差距你就别点开→', 365, 208, 194, 341),
+    ('天呐噜~你关注的【%name】已经成为网红爆款，%age宝宝都在用！想知道妈咪们肿么评价TA？请戳→', 54, 329, 43, 102, 189, 14, 63),
+    ('%age宝宝都在玩这款%name，没TA你别跟我谈什么德智体美全面发展，点我→', 83,290 ),
+    ('%age宝宝都在吃这款%name，看看你家宝贝是不是已被甩了几条街了→', 12, 28, 1),
+    ('你感兴趣的【%name】已经有人败了，快过来看看这位妈妈怎么说→', 0),
+    ('还在纠结要不要入【%name】？有人已经快你一步下手了，她有话对你说→',0),
+    ('嘿~暗中观察你很久了！知道这件宝贝【%name】你很心水，来看别人怎么评价它吧！', 0),
+    ('我等的花儿都谢了~从你关注【%name】至今已有两个世纪，为什么还没下单？这个理由够不够？', 0),
+    ('不敢保证这件%name会让你的生活有质的飞跃，但至少每一次量变都能让你离质变更近一步，戳开→',0)
+]
+
+def getTextFromTemplate(index, catgyId, varDict):
+    text = ''
+    idx = 0
+    for temp in templates:
+        if temp[1] == 0 or catgyId not in temp or temp[0].count('%') !=len(varDict):
+            idx += 1
+            continue
+        text = temp[0]
+        for name, value in varDict.iteritems():
+            rep = '%'+name
+            if temp[0].find(rep) >= 0:
+                text = text.replace(rep, value)
+        break
+    if text:
+        return idx, text
+    
+    idx = index%len(templates)
+    tempList = templates[idx:]+templates[:idx]
+    for temp in tempList:
+        if temp[1] != 0:
+            idx += 1
+            continue
+        text = temp[0]
+        for name, value in varDict.iteritems():
+            rep = '%'+name
+            if temp[0].find(rep) >= 0:
+                text = text.replace(rep, value)
+        break
+    return idx%len(templates), text
+
+def getAgeDesc(month):
+    year = month/12
+    month = month%12
+    desc = ''
+    if year == 0:
+        desc = '%s个月'%month
+    else:
+        i = month/3
+        if i==1 or i==2:
+            desc = '%s岁半'%year
+        else:
+            if i == 3:
+                year += 1
+            desc = '%s岁'%year
+    return desc.decode()
+
+def uploadFile(path, fname):
+    link = 'http://10.1.115.114:12001/d1'
+    header = {'real_filename':'/opt/fsroot/p5/subjects/%s'%fname, 'expect':'100-continue'}
+    fp = open(path+fname, 'rb')
+    resp = requests.post(link, data=fp.read(), headers=header)
+    fp.close()
+    if resp.status_code == 200:
+        #return 'http://mia-img.ks3-cn-beijing.ksyun.com/d1/p5/subjects/%s'%fname
+        return 'http://img01.miyabaobei.com/d1/p5/subjects/%s'%fname
+    else:
+        return ''

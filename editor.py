@@ -20,7 +20,13 @@ class Editor:
 
     def loadData(self):
         srcModel = self.srcModel
+        self.heartbeat()
         return srcModel.select().where(srcModel.id>self.checkPoint).order_by(srcModel.id).limit(100)
+
+    def heartbeat(self, status=1):
+        name = self.__class__.__name__
+        info = {'name':name, 'status':status, 'ts':time.time()}
+        pushInto(Heartbeat, info, ['name'])
 
     def edit(self, row):
         return 0
@@ -28,7 +34,7 @@ class Editor:
     def progress(self):
         self.count += 1
         if self.count % self.batchSize == 0:
-            logging.info('Processed: %s'%self.count)
+            logging.info('Processed: %s/%s'%(self.valid, self.count))
 
     def setCheckPoint(self, row):
         self.checkPoint = row.id
@@ -46,23 +52,36 @@ class Editor:
         pushInto(Offset, {'name':key, 'offset':self.checkPoint}, ['name'])
 
     def finish(self):
+        self.heartbeat(0)
         return True
                         
     def run(self):
-        count = 0
+        self.valid = 0
         clsName = self.__class__.__name__
         while True:
             rows = self.loadData()
             if len(rows) == 0:
                 break
             for row in rows:
-                count += self.edit(row)
+                self.valid += self.edit(row)
                 self.setCheckPoint(row)
                 self.progress()
         self.finish()
         self.saveCheckPoint()
-        logging.info('%s Done %s/%s'%(clsName, count, self.count))
+        logging.info('%s Done %s/%s'%(clsName, self.valid, self.count))
 
+class Monitor(Editor):
+    def loadData(self):
+        mdls = Heartbeat.select().where(Heartbeat.status==1)
+        for mdl in mdls:
+            tsdiff = int(time.time() - mdl.ts)
+            if tsdiff > 10*60:#send mail
+                title = '【报警】%s已超过%s分钟没有心跳'%(mdl.name, tsdiff/60)
+                addr = ['yandechen@mia.com']
+                mail = EmailUtil('exmail.qq.com', 'miasearch@mia.com', 'HelloJack123')
+                mail.sendEmail(addr, title)
+        return []
+    
 class Leads2Base(Editor):
     srcModel = AdminLeads
     batchId = 2
@@ -1170,6 +1189,7 @@ class SimPost(Editor):
 
 import redis
 import copy
+import re
 #每日曝光抽取为文件
 class DailyExpose(Editor):
     def loadData(self):
@@ -1582,10 +1602,6 @@ class PostUniform(Editor):
                     if click > 0:
                         careInfo2[uid]['stat'][2] += click
                         careInfo2[uid]['stat'][3] += 1
-            fp = open('data/care-'+str(date), 'w')
-            for uid, pstat in careInfo2.iteritems():
-                fp.write(str(uid) + '\t' + '\t'.join([str(x) for x in pstat['stat'][:5]]) + '\t' + pstat['stat'][-1])
-            fp.close()
 
             if date == yday:
                 break
@@ -1800,8 +1816,117 @@ class ClickPos(Editor):
         fp.close()
         return []
 
+class MaterialScore(Editor):
+    def setCheckPoint(self, post):
+        return 0
+    def loadInitData(self):
+        self.postCtr = {}
+        self.catgyBucket = {}
+        self.brandBucket = {}
+        self.skuBucket = {}
+        self.userBucket = {}
+        self.redis = RedisUtil()
+        self.fp = None
+        path = '/opt/parsed_data/ctr/kblist_acc_ctr'
+        if os.path.exists(path):
+            for line in open(path):
+                li = line[:-1].split('\t')
+                pid = int(li[0])
+                ctr = float(li[3])
+                if ctr > 0:
+                    self.postCtr[pid] = ctr
+
+    def loadData(self):
+        if not self.fp:
+            date = datetime.date.today() - datetime.timedelta(days=1)
+            path = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%date.strftime('%Y%m%d')
+            try:
+                self.fp = open(path)
+            except:
+                return []
+
+        res = []
+        for line in self.fp:
+            post = line[:-1].split('\t')
+            while len(post) < 18:
+                line += self.fp.next()
+                post = line[:-1].split('\t')
+            if post[21] == '1':
+                res.append(post)
+            if len(res) > self.batchSize:
+                break
+        return res
+
+    def edit(self, post):
+        try:
+            pid = int(post[0])
+            uid = int(post[1])
+            skuIds = [int(x) for x in post[10].split(',') if x!='NULL' and x!='0']
+            items = RelateSku.select().where(RelateSku.id<<skuIds)
+            catgys = ItemCatgy.select().where(ItemCatgy.id<<[x.category_id for x in items])
+            brandIds = [x.brand_id for x in items]
+            catgyIds = []
+            for mdl in catgys:
+                catgyIds += [int(x) for x in mdl.path.split('-')]
+            score = self.getScore(post)
+            pScore = [pid, score]
+            for brandId in brandIds:
+                if brandId not in self.brandBucket:
+                    self.brandBucket[brandId] = []
+                self.brandBucket[brandId].append(pScore)
+            for skuId in skuIds:
+                if skuId not in self.skuBucket:
+                    self.skuBucket[skuId] = []
+                self.skuBucket[skuId].append(pScore)
+            for catgyId in catgyIds:
+                if catgyId not in self.catgyBucket:
+                    self.catgyBucket[catgyId] = []
+                self.catgyBucket[catgyId].append(pScore)
+            if uid not in self.userBucket:
+                self.userBucket[uid] = []
+            self.userBucket[uid].append(pScore)
+            return 1
+        except:
+            return 0
+        
+    def getScore(self, post):
+        pid = int(post[0])
+        textLen = int(post[4])
+        picNum = int(post[3])
+        score = picNum*3+min(textLen/20,20)
+        if pid in self.postCtr:
+            score += 20*self.postCtr[pid]
+        return score
+    def pushChunks(self, key, pScore, chunkSize=50):
+        llen = self.redis.inst.llen(key)
+        topN = heapq.nlargest(500, pScore, key=lambda x:x[1])
+        for i in range(0, len(topN), chunkSize):
+            chunk = topN[i:i+chunkSize]
+            idx = i/chunkSize
+            if llen > idx:
+                self.redis.inst.lset(key, idx, json.dumps(chunk))
+            else:
+                self.redis.inst.rpush(key, json.dumps(chunk))
+    def finish(self):
+        chunkSize = 50
+        for skuId, pScore in self.skuBucket.iteritems():
+            key = 'material:sku:%s'%skuId
+            self.pushChunks(key, pScore)
+        for brandId, pScore in self.brandBucket.iteritems():
+            key = 'material:brand:%s'%brandId
+            self.pushChunks(key, pScore)
+        for catgyId, pScore in self.catgyBucket.iteritems():
+            key = 'material:category:%s'%catgyId
+            self.pushChunks(key, pScore)
+        for uid, pScore in self.userBucket.iteritems():
+            key = 'material:user:%s'%uid
+            self.pushChunks(key, pScore)
+        if self.fp:
+            self.fp.close()
+
 class KoubeiScore(Editor):
     strategy = (0, 1)
+    chunkSize = 100
     def __init__(self, **kwargs):
         self.clickCount = {}
         self.postCtr = {}
@@ -1862,6 +1987,9 @@ class KoubeiScore(Editor):
             mscore = 2
         else:
             mscore = int(sub.semantic_analys)
+        positive = uscore + mscore - 2
+        if positive < 3:
+            return [0]
         textLen = 0
         for c in sub.text:
             if ord(c) > 128:
@@ -1875,7 +2003,6 @@ class KoubeiScore(Editor):
             click = self.clickCount[pid]
         else:
             click = 1
-        positive = uscore + mscore - 2
         pastDays = (datetime.date.today()-ctime.date()).days
         score = positive*5+len(pics)*3+min(textLen/20,10)+round(math.log(click)-0.25*pastDays/30, 2)
         if stagy==1 and sub.image_url and positive>4 and pid in self.postCtr:#abtest
@@ -1897,14 +2024,13 @@ class KoubeiScore(Editor):
         for stagy in self.strategy:
             rankScore = {}
             if stagy == 0:
-                key = 'koubei:rank_score:%s'%itemId
+                key = 'koubei:score:%s'%itemId
             else:
-                key = 'koubei:rank_score:%s:%s'%(stagy, itemId)
+                key = 'koubei:score:%s:%s'%(stagy, itemId)
             if incFlag:
-                ranked = self.redis.get_obj(key)
-                if ranked:
-                    for scinfo in ranked:
-                        pdb.set_trace()
+                ranked = self.redis.inst.lrange(key, start=0, end=-1)
+                for chunk in ranked:
+                    for scinfo in json.loads(chunk):
                         kbid = scinfo[0]
                         score = scinfo[1:]
                         rankScore[kbid] = score
@@ -1921,7 +2047,14 @@ class KoubeiScore(Editor):
             sortList = [[kbid]+score for kbid, score in rankScore.iteritems()]
             ranked = sorted(sortList, key=lambda x:x[1], reverse=True)
             #save into redis
-            self.redis.set_obj(key, ranked)
+            llen = self.redis.inst.llen(key)
+            for i in xrange(0, len(ranked), self.chunkSize):
+                chunk = ranked[i:i+self.chunkSize]
+                idx = i/self.chunkSize
+                if llen > idx:
+                    self.redis.inst.lset(key, idx, json.dumps(chunk))
+                else:
+                    self.redis.inst.rpush(key, json.dumps(chunk))
         return 1
     
     def edit(self, model):
@@ -2087,18 +2220,20 @@ class KbrankMonitor(Editor):
         return []
 #活动结束用户数据统计
 class ActiveData(Editor):
-    labelId = [27938]
-    exclude = [19557, 23850, 29292, 27838]
-    source = (1,)
-    output = (0, 1)
+    labelId = [31129]
+    exclude = [28298, 23850, 29410]
+    source = (2,)
+    status = (1,)
+    output = (0,1)
     titPic = False
-    startDate = '20170703'
-    endDate = '20170710'
+    subItem = False
+    labelNum = 0
+    startDate = '20170825'
+    endDate = '20170827'
     countLimit = 0
     info = {}
     detail = {}
     fpList = {}
-    subSet = set()
     userActive = {}
     labelInfo = {}
     def loadCheckPoint(self):
@@ -2108,53 +2243,56 @@ class ActiveData(Editor):
             mdls = RawLabel.select().where(RawLabel.id<<self.labelId)
             for mdl in mdls:
                 self.labelInfo[mdl.id] = mdl.title
-        return Label.select().where((Label.label_id<<self.labelId) & (Label.id>self.checkPoint)).order_by(Label.id).limit(self.batchSize)
+        return Subject.select().where((Subject.id>self.checkPoint)&(Subject.created>self.startDate)&(Subject.source<<self.source)&(Subject.status<<self.status)).order_by(Subject.id).limit(self.batchSize)
 
     def edit(self, model):
-        pid = model.subject_id
-        if pid in self.subSet:#dedup subject_id
-            return 0
-        else:
-            self.subSet.add(pid)
-        dateStr = model.create_time.strftime('%Y%m%d')
+        pid = model.id
+        if self.subItem:
+            try:
+                SubTag.select().where((SubTag.subject_id==pid)&(SubTag.item_id>0)).get()
+            except:
+                return 0
+        dateStr = model.created.strftime('%Y%m%d')
         if dateStr < self.startDate or dateStr > self.endDate:
             return 0
         prefer = 0
-        if self.exclude:
-            mdls = Label.select().where(Label.subject_id==pid)
-            for mdl in mdls:
-                if mdl.label_id in self.exclude:
-                    return 0
-                if mdl.is_recommend:
-                    prefer = 1
+        mdls = Label.select().where(Label.subject_id==pid)
+        st = set([mdl.label_id for mdl in mdls])
+        if st & set(self.exclude):
+            return 0
+        if self.labelId and not st & set(self.labelId):
+            return 0
+        if self.labelNum and len(st) != self.labelNum:
+            return 0
+        for mdl in mdls:
+            if mdl.is_recommend:
+                prefer = 1
         try:
-            mdl = Subject.select().where(Subject.id==pid).get()
-            if mdl.status in (-1, 0):
-                return 0
-            if mdl.source not in self.source:
+            if model.source not in self.source:
                 return 0
             if self.titPic:
-                if not mdl.title and not mdl.image_url:
+                if not model.title and not model.image_url:
                     return 0
             #postCount, fineCount, firstPostId
-            if mdl.user_id not in self.info:
-                self.info[mdl.user_id] = [0, 0, mdl.id]
-                self.detail[mdl.user_id] = {}
-                self.userActive[mdl.user_id] = {}
-            self.info[mdl.user_id][0] += 1
+            if model.user_id not in self.info:
+                self.info[model.user_id] = [0, 0, model.id]
+                self.detail[model.user_id] = {}
+                self.userActive[model.user_id] = {}
+            self.info[model.user_id][0] += 1
             zan = KoubeiZan.select().where(KoubeiZan.subject_id==pid).count()
-            self.detail[mdl.user_id][pid] = zan
-            self.info[mdl.user_id][1] += prefer
-            if model.label_id not in self.userActive[mdl.user_id]:
-                self.userActive[mdl.user_id][model.label_id] = [0, 0, 0]
-            self.userActive[mdl.user_id][model.label_id][0] += 1
-            self.userActive[mdl.user_id][model.label_id][1] += prefer
+            self.detail[model.user_id][pid] = zan
+            self.info[model.user_id][1] += prefer
+            for mdl in mdls:
+                if mdl.label_id not in self.userActive[model.user_id]:
+                    self.userActive[model.user_id][mdl.label_id] = [0, 0, 0]
+                self.userActive[model.user_id][mdl.label_id][0] += 1
+                self.userActive[model.user_id][mdl.label_id][1] += prefer
         except:
             return 0
         return 1
 
     def writeData(self, uid, stat):
-        model = Subject.select().where((Subject.user_id==uid)&(Subject.status.not_in([-1, 0]))).order_by(Subject.id).limit(1).get()
+        model = Subject.select().where((Subject.user_id==uid)&(Subject.status<<self.status)).order_by(Subject.id).limit(1).get()
         if model.id == stat[2]:
             stat[2] = model.source
         else:
@@ -2163,7 +2301,9 @@ class ActiveData(Editor):
         for i, finfo in self.fpList.items():
             fp = finfo[1]
             if i == 0:
-                fp.write('%s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, stat[0], stat[1], stat[2]))
+                m = Fans.select(fn.COUNT(Fans.id).alias('fans')).where(Fans.replation_user_id==uid).get()
+                regTime = mdl.create_date.strftime('%Y-%m-%d %H:%M:%S')
+                fp.write('%s, %s, %s, %s, %s, %s, %s, %s\n'%(uid, mdl.username, mdl.nickname, stat[0], stat[1], stat[2], m.fans, regTime))
             elif i == 1:
                 if stat[0] < self.countLimit:
                     return
@@ -2190,7 +2330,7 @@ class ActiveData(Editor):
                     
     def finish(self):
         for i in self.output:
-            path = 'data/stat-%s-%s-%s.csv'%(self.labelId[0], ','.join(map(str, self.source)), i)
+            path = 'data/stat-%s-%s-%s.csv'%(str(self.labelId), ','.join(map(str, self.source)), i)
             fp = open(path, 'w')
             self.fpList[i] = [path, fp]
         for uid, stat in self.info.iteritems():
@@ -2204,17 +2344,18 @@ class ActiveData(Editor):
         mail.sendEmail(addr, title, files=files)
 
 class ActiveData2(ActiveData):
-    labelId = [24]
-    exclude = [23850, 28933, 29410, 29456, 28298, 27838]
+    roleId = 46
+    labelId = [28298]
+    exclude = []
     source = (1,2)
     output = (0,)
-    startDate = '20170715'
-    endDate = '20170720'
+    startDate = '20170701'
+    endDate = '20170830'
     def loadInitData(self):
-        mdls = UserRole.select().where(UserRole.role_id==self.labelId[0])
+        mdls = UserRole.select().where(UserRole.role_id==self.roleId)
         self.userId = [x.user_id for x in mdls]
     def loadData(self):
-        return Label.select().where((Label.user_id<<self.userId)&(Label.id>self.checkPoint)).order_by(Label.id).limit(self.batchSize)
+        return Subject.select().where((Subject.user_id<<self.userId)&(Subject.id>self.checkPoint)&(Subject.created>self.startDate)).order_by(Subject.id).limit(self.batchSize)
     
 class QualityPost(Editor):
     def loadData(self):
@@ -2282,12 +2423,7 @@ class QualityPost(Editor):
         return []
 
 class TargetUser(Editor):
-    templates = [
-        '你感兴趣的【%s】已经有人败了，快过来看看这位妈妈怎么说',
-        '还在纠结要不要入【%s】？有人已经快你一步下手了，她有话对你说→',
-        '嘿~暗中观察你很久了！知道这件宝贝【%s】你很心水，来看别人怎么评价它吧！',
-        '我等的花儿都谢了~从你关注【%s】至今已有两个世纪，为什么还没下单？这个理由够不够？'
-    ]
+    seg = [0,9]
     tmpIdx = 0
     def loadData(self):
         today = datetime.date.today()
@@ -2295,6 +2431,10 @@ class TargetUser(Editor):
         date = today - datetime.timedelta(days=7)
         if self.checkPoint == int(today.strftime('%Y%m%d')):
             return []
+        tableName = 'sub%s_%s'%(self.seg[0], today.strftime('%Y%m%d'))
+        cmd = "mysql -h 10.1.106.1 -upostpush -p'postpushqwer!@#z%%' postpush -e 'create table if not exists %s (id int(11) unsigned not null auto_increment, user_id int(11) unsigned not null, url varchar(128) not null, content varchar(256) not null, primary key(id), key uid(user_id))ENGINE=MyISAM DEFAULT CHARSET=utf8;'"%tableName
+        os.system(cmd)
+        self.pushTab = getOrmModel('pushtable', tableName)
         self.rds = redis.StrictRedis(host = '10.1.52.187')
         self.policy = {}
         self.pushCount = 0
@@ -2311,12 +2451,16 @@ class TargetUser(Editor):
                 return []
             dvcSet = set()
             for fname in os.listdir(path):
-                if fname[:4] != 'part':
+                if fname[:4] != 'part' or fname.find('.') > 0:
                     continue
                 logging.info('Process %s'%(path+fname))
                 for line in open(path+fname):
                     li = line.split(', ')
                     dvcId = li[0][3:-1]
+                    hint = zlib.crc32(dvcId)&0xffffffff
+                    left = hint % 10
+                    if left < self.seg[0] or left > self.seg[1]:
+                        continue
                     ts = int(li[2][2:-1])/1000
                     skuId = li[4][2:-1]
                     typ = int(li[5])
@@ -2342,25 +2486,39 @@ class TargetUser(Editor):
             if skuId not in self.quality:
                 self.quality[skuId] = [1]
             self.quality[skuId].append((li[1], li[4].decode('gbk')))
+        path = 'data/article-text.csv'
+        self.article = {}
+        for line in open(path):
+            li = line[:-1].split(',')
+            pid = int(li[0])
+            self.article[pid] = li[1].decode('gbk')
         mapping = {}
         for line in open('/opt/dm_rec/data_mining/data/id_mapping'):
             li = line[:-1].split('\t')
-            mapping[li[0]] = li[1]
-
+            try:
+                mapping[li[0]] = int(li[1])
+            except:
+                pass
+        self.ageInfo = {}
+        for line in open('/opt/parsed_data/demography/USER_result.txt'):
+            li = json.loads(line)
+            dvcId = li['uid']
+            age = li['baby_age_month']
+            if dvcId not in mapping or age == -1:
+                continue
+            self.ageInfo[mapping[dvcId]] = age
         orderDate = today - datetime.timedelta(days=14)
         dateStr = orderDate.strftime('%Y%m%d')
-        count = 0
-        fp = open('data/user-action-%s'%yday.strftime('%Y%m%d'), 'w')
+        count = {'processed':0, 'mapError':0, 'succ':0, 'fail':0, 'repeat':0, 'total':len(info)}
         for dvcId, eles in info.iteritems():
-            count += 1
-            if count%1000 == 0:
-                logging.info('Processed %s/%s'%(count, len(info)))
+            count['processed'] += 1
+            if count['processed']%1000 == 0:
+                logging.info('Progress %s'%str(count))
+                self.heartbeat()
             if dvcId not in mapping:
+                count['mapError'] += 1
                 continue
-            try:
-                uid = int(mapping[dvcId])
-            except:
-                continue
+            uid = mapping[dvcId]
             active = eles.pop('active')
 #            if active < 3:#no push to unactive user
 #                continue
@@ -2371,19 +2529,22 @@ class TargetUser(Editor):
                     del eles[skuId]
             res = 0
             for skuId, action in eles.iteritems():
-                if action[2] > 0 or action[1] > 0:#tocart or collect
-                    res = self.policyPush(uid, skuId, action, dvcId)
-                    if res < 2:
-                        break
-            if res != 1:#if not push succ
-                for skuId, action in eles.iteritems():
-                    res = self.policyPush(uid, skuId, action, dvcId)
-                    if res < 2:
-                        break
-                #fp.write('%s\t%s\t%s\t%s\n'%(uid, skuId, action, str(quality[skuId])))
-                #fp.write('%s\t%s\t%s\n'%(uid, skuId, action))
-        fp.close()
+                res = self.policyPush(uid, skuId, action, dvcId, 'quality')
+                if res < 2:
+                    break
+            if res == 2:#if not push succ
+                res = self.policyPush(uid, skuId, action, dvcId, 'recommend')
+            if res == 1:#succ
+                count['succ'] += 1
+            elif res == -1:#have pushed today
+                count['repeat'] += 1
+            else:#recommend push fail
+                count['fail'] += 1
         self.checkPoint = int(today.strftime('%Y%m%d'))
+        #commit push task
+        nowStr = datetime.datetime.now().strftime('%Y-%m-%d%%20%H:%M:%S')
+        url = 'http://msg.miyabaobei.com/apipush/create?title=postpush&execute_time=%s&user_type=2&mysql_type=1&user_value=postpush.%s&checkauth=Auth20170427forCrm'%(nowStr, tableName)
+        resp = requests.get(url, timeout=3)
         logging.info('Pushed %s'%self.pushCount)
         return []
 
@@ -2407,12 +2568,17 @@ class TargetUser(Editor):
     def getPushFromRec(self, uid, dvcId, dateStr):
         postid = 0
         text = ''
+        idx = 0
         try:
-            url = 'http://content.rec.mia.com/recommend_result?did=%s&sessionid=push%s&pagesize=20&pressure=1&forpush=1'%(dvcId, dateStr)
+            url = 'http://content.rec.mia.com/recommend_result?did=%s&tp=8&pagesize=10&pressure=1'%dvcId
             resp = requests.get(url, timeout=3)
             eles = json.loads(resp.content)
+            url = 'http://content.rec.mia.com/recommend_result?did=%s&sessionid=push%s&pagesize=20&pressure=1&forpush=1'%(dvcId, dateStr)
+            resp = requests.get(url, timeout=3)
+            eles2 = json.loads(resp.content)
+            eles['pl_list'] += eles2['pl_list']
         except:
-            return postid, text
+            return postid, idx, text
         maxTextLen = 0
         maxTextSub = None
         for ele in eles['pl_list']:
@@ -2421,7 +2587,7 @@ class TargetUser(Editor):
             if len(mdl) > 0:#have pushed
                 continue
             try:
-                sub = Subject.select().where(Subject.id==pid).get()
+                sub = Subject.select().where((Subject.id==pid)&(Subject.status==1)).get()
                 textLen = 0
                 for c in sub.text:
                     if ord(c) > 128:
@@ -2431,52 +2597,69 @@ class TargetUser(Editor):
             if textLen > maxTextLen:
                 maxTextLen = textLen
                 maxTextSub = sub
+            extInfo = json.loads(sub.ext_info)
+            if 'is_blog' in extInfo and extInfo['is_blog']==1:
+                if pid in self.article:
+                    return sub.id, 10002, self.article[pid]
+                else:
+                    return sub.id, 10001, sub.title
             if textLen > 100:
                 break
         try:
             postid = maxTextSub.id
-            mdl = Koubei.select().where(Koubei.subject_id==postid).get()
+            mdl = SubTag.select().where((SubTag.subject_id==postid)&(SubTag.item_id>0)).get()
             mdl = RelateSku.select().where(RelateSku.id==mdl.item_id).get()
-            idx = self.tmpIdx % len(self.templates)
-            template = self.templates[idx]
-            self.tmpIdx += 1
+            m2 = ItemCatgy.select().where(ItemCatgy.id==mdl.category_id).get()
+            catgyId = int(m2.path.split('-')[0])
             if mdl.activity_short_title:
-                text = template%mdl.activity_short_title
+                name = mdl.activity_short_title
             else:
                 m1 = ItemBrand.select().where(ItemBrand.id==mdl.brand_id).get()
-                m2 = ItemCatgy.select().where(ItemCatgy.id==mdl.category_id).get()
-                text = template%(m1.chinese_name+m2.name)
+                name = m1.chinese_name+m2.name
+            if uid in self.ageInfo:
+                varDict = {'name':name, 'age':getAgeDesc(self.ageInfo[uid])}
+            else:
+                varDict = {'name':name}
+            idx, text = getTextFromTemplate(self.tmpIdx, catgyId, varDict)
+            self.tmpIdx += 1
         except:
             pass
-        return postid, text
+        return postid, idx, text
 
-    def policyPush(self, uid, skuId, action, dvcId):
+    def policyPush(self, uid, skuId, action, dvcId, source):
+        tmpIdx = 0
         today = datetime.date.today()
         dateStr = today.strftime('%Y%m%d')
         mdl = PushLog.select().where((PushLog.uid==uid)&(PushLog.created>dateStr))
         if len(mdl) > 0:#have pushed today
-            return 0
-        if skuId in self.quality:
-            source = 'quality'
+            return -1
+        if source == 'quality':
+            if skuId not in self.quality:
+                return 2
+            tmpIdx = 10000
             pid, text = self.getPushFromQuality(uid, skuId)
             if not pid or not text:
                 return 2#next skuId
         else:
-            source = 'recommend'
-            pid, text = self.getPushFromRec(uid, dvcId, dateStr)
+            pid, tmpIdx, text = self.getPushFromRec(uid, dvcId, dateStr)
             if not pid or not text:
                 return 0
 
         dateStr = today.strftime('%Y%m%d')
-        info = {
-            'user_id':int(uid),
-            'content':text,
-            'url':'miyabaobei://subject?id=%s&push=personalized_post-%s-%s'%(pid, dateStr, int(time.time()))
-        }
-        self.rds.lpush('app_custom_push_list', json.dumps(info))
-        pushInto(PushLog, {'uid':uid, 'skuid':skuId,'pid':pid, 'dvcid':dvcId, 'action':str(action), 'content':text, 'source':source})
+        link = 'miyabaobei://subject?id=%s&push=personalized_post-%s-%s'%(pid, dateStr, int(time.time()))
+#        info = {
+#            'user_id':int(uid),
+#            'content':text,
+#            'url':link
+#        }
+#        self.rds.lpush('app_custom_push_list', json.dumps(info))
+        pushInto(PushLog, {'uid':uid, 'skuid':skuId,'pid':pid, 'dvcid':dvcId, 'action':str(action), 'content':text, 'source':source, 'tmpIdx':tmpIdx})
+        pushInto(self.pushTab, {'user_id':uid, 'content':text, 'url':link})
         self.pushCount += 1
         return 1
+
+class TargetUser1(TargetUser): seg = [0,4]
+class TargetUser2(TargetUser): seg = [5,9]
 
 class PushStat(Editor):
     def loadData(self):
@@ -2638,25 +2821,424 @@ class UserAddr(Editor):
             except:
                 continue
         fp.close()
+        title = '【用户信息】'
+        addr = ['yandechen@mia.com']
+        mail = EmailUtil('exmail.qq.com', 'miasearch@mia.com', 'HelloJack123')
+        mail.sendEmail(addr, title, files=['data/useraddr.csv'])
         return []
 
 from picview import *
 class PicView(Editor):
     def loadData(self):
-        return Subject.select().where((Subject.id>self.checkPoint)&(Subject.created>'2017-07-10')).order_by(Subject.id).limit(self.batchSize)
-#        return Subject.select().where((Subject.id>self.checkPoint)&(Subject.id==12164284)).order_by(Subject.id).limit(self.batchSize)
+        path = '/opt/parsed_data/text_features_4_index/index_terms_input.txt'
+        today = datetime.date.today()
+        if self.checkPoint == int(today.strftime('%Y%m%d')):
+            return []
+        count = {'succ':0, 'total':0}
+        for line in open(path):
+            li = line.split('\t')
+            pid = li[1]
+            count['total'] += 1
+            try:
+                mdl = PicFeature.select().where((PicFeature.pid==pid)&(PicFeature.idx==1000)).get()
+                continue
+            except:
+                count['succ'] += 1
+                if count['succ']%1000 == 0:
+                    logging.info('Processed %s'%str(count))
+            mdl = Subject.select().where(Subject.id==pid).get()
+            extInfo = None
+            if mdl.ext_info:
+                extInfo = json.loads(mdl.ext_info)
+            if extInfo and 'cover_image' in extInfo:
+                cover = extInfo['cover_image']['url']
+            elif mdl.image_url:
+                cover = mdl.image_url.split('#')[0]
+            else:
+                continue
+            link = 'http://img05.miyabaobei.com/'+cover
+            clarity, bright = getPicFeatureFromUrl(link)
+            scoreBright = 1-abs(bright-150)/150.0
+            scoreClarity = min(100,clarity)/100.0
+            score = round(scoreBright*0.7+scoreClarity*0.3, 2)*100
+            pushInto(PicFeature, {'pid':pid, 'idx':1000, 'bright':bright, 'clarity':clarity, 'score':score}, ['pid', 'idx'])
+
+        path = '/opt/parsed_data/picture/feature.txt'
+        mdls = PicFeature.select().where(PicFeature.score>0)
+        fp = open(path, 'w')
+        for mdl in mdls:
+            fp.write('%s\t%s\t%s\t%s\n'%(mdl.pid, mdl.bright, mdl.clarity, mdl.score))
+        fp.close()
+        self.checkPoint = int(today.strftime('%Y%m%d'))
+        return []
+
+class GroupSku(Editor):
+    batchSize = 1000
+    clickInfo = {}
+    catgyStat = {}
+    def loadInitData(self):
+        self.checkPoint = 0
+#        today = datetime.date.today()
+#        for day in range(1,31):
+#            date = today - datetime.timedelta(days=day)
+#            path = 'data/click-%s/part-00000'%date.strftime('%Y%m%d')
+#            for line in open(path):
+#                idx = line.find("',")
+#                li = line[3:idx].split('_')
+#                num = line[idx+2:-2]
+#                pid = int(li[0])
+#                if pid not in self.clickInfo:
+#                    self.clickInfo[pid] = 0
+#                self.clickInfo[int(pid)] += 1
+    def loadData(self):
+        return Subject.select().where((Subject.id>self.checkPoint)&(Subject.status==1)&(Subject.source==1)&(Subject.created>'20170401')&(Subject.created<'20170801')).order_by(Subject.id).limit(self.batchSize)
     def edit(self, model):
         try:
-            mdl = PicFeature.select().where(PicFeature.pid==model.id).get()
-            return 0
+            mdl1 = SubTag.select().where((SubTag.subject_id==model.id)&(SubTag.item_id>0)).get()
+            mdl2 = RelateSku.select().where(RelateSku.id==mdl1.item_id).get()
+            mdl3 = ItemCatgy.select().where(ItemCatgy.id==mdl2.category_id).get()
+            c1 = mdl3.path.split('-')[0]
+            mdl4 = ItemCatgy.select().where(ItemCatgy.id==c1).get()
         except:
-            pass
-        if model.image_url:
-            pics = model.image_url.split('#')
-        else:
             return 0
-        for i, pic in enumerate(pics):
-            link = 'http://img05.miyabaobei.com'+pic
-            clarity, bright = getPicFeatureFromUrl(link)
-            pushInto(PicFeature, {'pid':model.id, 'idx':i, 'bright':bright, 'clarity':clarity*100}, ['pid', 'idx'])
+        if mdl4.name not in self.catgyStat:
+            self.catgyStat[mdl4.name] = [0, 0]
+        self.catgyStat[mdl4.name][0] += 1
+        textLen = 0
+        for c in model.text:
+            if ord(c) > 128:
+                textLen += 1
+        picNum = len(model.image_url.split('#'))
+        if textLen>99 and picNum>2:
+            self.catgyStat[mdl4.name][1] += 1
+#        if model.id in self.clickInfo:
+#            self.catgyStat[mdl4.name][2] += self.clickInfo[model.id]
         return 1
+    def finish(self):
+        path = 'data/group-catgy-stat.csv'
+        fp = open(path, 'w')
+        for name, stat in self.catgyStat.iteritems():
+            fp.write('%s, %s, %s\n'%(name, stat[0], stat[1]))
+        fp.close()
+        title = '【蜜芽圈统计】'
+        addr = ['yandechen@mia.com']
+        mail = EmailUtil('exmail.qq.com', 'miasearch@mia.com', 'HelloJack123')
+        mail.sendEmail(addr, title, files=[path])
+
+import xml.etree.ElementTree as ET
+class Dump4Baidu(Editor):
+    xmlPrefix = 'xml4baidu'
+    def loadInitData(self):
+        self.eleCount = 0
+        self.root = ET.Element('urlset')
+        self.root.set('content_method', 'full')
+    def loadData(self):
+        return SubTag.select().where((SubTag.id>self.checkPoint)&(SubTag.subject_id>0)).order_by(SubTag.id).limit(self.batchSize)
+        
+    def edit(self, tag):
+        try:
+            model = Subject.select().where((Subject.id==tag.subject_id)&(Subject.status==1)).get()
+            if model.semantic_analys < 2:
+                return 0
+            textLen = 0
+            for c in model.text:
+                if ord(c) > 128:
+                    textLen += 1
+            if textLen < 50:
+                return 0
+            extInfo = None
+            if model.ext_info:
+                extInfo = json.loads(model.ext_info)
+            if extInfo and 'cover_image' in extInfo:
+                cover = extInfo['cover_image']['url']
+            elif model.image_url:
+                cover = model.image_url.split('#')[0]
+            else:
+                return 0
+            cover = cover if cover[0]!='/' else cover[1:]
+            cover = 'http://img05.miyabaobei.com/'+cover
+            mdl = RelateSku.select().where(RelateSku.id==tag.item_id).get()
+            m1 = ItemBrand.select().where(ItemBrand.id==mdl.brand_id).get()
+            m2 = ItemCatgy.select().where(ItemCatgy.id==mdl.category_id).get()
+            sku = mdl.name
+            title = model.title
+            if not title:
+                title = m1.chinese_name+m2.name
+            mdl = User.select().where(User.id==model.user_id).get()
+            username = mdl.nickname
+            if not username:
+                username = mdl.username
+            kword = ''
+            if m1.chinese_name:
+                kword += m1.chinese_name
+            if m2.name:
+                kword += m2.name
+        except:
+            return 0
+        link = 'https://m.miyabaobei.com/wx/group_detail/%s.html'%model.id
+        cdate = model.created.strftime('%Y-%m-%d')
+        self.setXmlItemFrame(link, title, model.id, cdate, username, cover, model.text, kword, m1.chinese_name, sku)
+
+        self.eleCount += 1
+        if self.eleCount % 5000 == 0:
+            tree = ET.ElementTree(self.root)
+            tree.write('data/%s-%s.xml'%(self.xmlPrefix, self.checkPoint), 'utf-8', True)
+            self.root = ET.Element('urlset')
+            self.root.set('content_method', 'full')
+        return 1
+
+    def setXmlItemFrame(self, link, title, workId, cdate, uname, cover, text, kword, bname, sku):
+        ele = ET.SubElement(self.root, 'url')
+        ET.SubElement(ele, 'loc').text = link
+        data = ET.SubElement(ele, 'data')
+        disp = ET.SubElement(data, 'display')
+        ET.SubElement(disp, 'workId').text = str(workId)
+        ET.SubElement(disp, 'wapUrl').text = link
+        ET.SubElement(disp, 'originalUrl').text = link
+        ET.SubElement(disp, 'headline').text = title
+        ET.SubElement(disp, 'datePublished').text = cdate
+        provider = ET.SubElement(disp, 'provider')
+        ET.SubElement(provider, 'brand').text = '蜜芽'
+        author = ET.SubElement(disp, 'author')
+        ET.SubElement(author, 'name').text = uname
+        ET.SubElement(author, 'tag').text = '普通用户'
+        ET.SubElement(author, 'fansCount').text = '0'
+        ET.SubElement(author, 'articleCount').text = '0'
+        ET.SubElement(disp, 'thumbnailUrl').text = cover
+        paragraph = ET.SubElement(disp, 'paragraph')
+        ET.SubElement(paragraph, 'contentType').text = 'text'
+        ET.SubElement(paragraph, 'text').text = text
+        ET.SubElement(disp, 'category').text = '母婴玩具'
+        ET.SubElement(disp, 'genre').text = '心得'
+        ET.SubElement(disp, 'keywords').text = kword
+        prod = ET.SubElement(disp, 'associatedProduct')
+        ET.SubElement(prod, 'brand').text = bname
+        ET.SubElement(prod, 'spu').text = sku
+        ET.SubElement(disp, 'scanCount').text = '0'
+        ET.SubElement(disp, 'thumbupCount').text = '0'
+        ET.SubElement(disp, 'thumbdownCount').text = '0'
+        ET.SubElement(disp, 'commentCount').text = '0'
+        ET.SubElement(disp, 'shareCount').text = '0'
+        ET.SubElement(disp, 'collectCount').text = '0'
+        return prod
+
+    def finish(self):
+        tree = ET.ElementTree(self.root)
+        tree.write('data/%s-%s.xml'%(self.xmlPrefix, self.checkPoint), 'utf-8', True)
+        self.root = ET.Element('urlset')
+        self.root.set('content_method', 'full')
+
+        #gen sitemap
+        path = 'data/'
+        indexpath = path + self.xmlPrefix + '-sitemap.xml'
+        if os.path.exists(indexpath):
+            tree = ET.parse(indexpath)
+            root = tree.getroot()
+        else:
+            root = ET.Element('sitemapindex')
+        for fname in os.listdir(path):
+            if fname.find('-sitemap')>0 or fname.find(self.xmlPrefix)<0:
+                continue
+            xmlstr = re.sub(u"[\x00-\x08\x0b-\x0c\x0e-\x1f]+",u"",open(path+fname).read().decode())
+            fp = open(path+fname, 'w')
+            fp.write(xmlstr)
+            fp.close()
+            pubLink = uploadFile(path, fname)
+            if pubLink:
+                logging.info('Upload %s succ.'%fname)
+                smap = ET.SubElement(root, 'sitemap')
+                loc = ET.SubElement(smap, 'loc')
+                loc.text = pubLink
+            else:
+                logging.info('Upload %s fail.'%fname)
+        os.system('mv data/%s-*.xml data/archive/'%self.xmlPrefix)
+        fname = self.xmlPrefix + '-sitemap.xml'
+        tree = ET.ElementTree(root)
+        tree.write(path+fname)
+
+        #upload sitemap index
+        pubLink = uploadFile(path, fname)
+        if pubLink:
+            logging.info('Sitemap for baidu succ.')
+        else:
+            logging.info('Sitemap for baidu fail.')
+
+class Prom4Baidu(Dump4Baidu):
+    xmlPrefix = 'prom4baidu'
+    def loadInitData(self):
+        Dump4Baidu.loadInitData(self)
+        os.system('rm data/%s-*.xml'%self.xmlPrefix)
+        self.checkPoint = 0
+    def loadData(self):
+        dateStr = datetime.date.today().strftime('%Y%m%d')
+        return Prom.select(Prom.id, Prom.create_time, Prom.intro, Prom.exten, Prom.end_time).where((Prom.id>self.checkPoint)&(Prom.end_time>dateStr)).order_by(Prom.id).limit(self.batchSize)
+    
+    def edit(self, model):
+        mdls = PromItem.select().where((PromItem.promotion_id==model.id)&(PromItem.status==0))
+        for m in mdls:
+            try:
+                mdl = RelateSku.select().where(RelateSku.id==m.sku).get()
+                m1 = ItemBrand.select().where(ItemBrand.id==mdl.brand_id).get()
+                m2 = ItemCatgy.select().where(ItemCatgy.id==mdl.category_id).get()
+                kword = model.exten
+                title = mdl.activity_short_title
+                if not title:
+                    title = m1.chinese_name+m2.name
+                m3 = ItemPic.select().where((ItemPic.item_id==mdl.id)&(ItemPic.type=='topic')).get()
+                cover = 'https://img01.miyabaobei.com/'+m3.local_url
+            except Exception, e:
+                return 0
+            link = 'https://m.mia.com/item-%s.html'%mdl.id
+            cdate = model.create_time.strftime('%Y-%m-%d')
+            prod = self.setXmlItemFrame(link, title, m.id, cdate, '', cover, mdl.name_added, kword, m1.chinese_name, mdl.name)
+            offer = ET.SubElement(prod, 'offers')
+            seller = ET.SubElement(offer, 'seller')
+            ET.SubElement(seller, 'name').text = '蜜芽'
+            price = ET.SubElement(offer, 'pricespecification')
+            ET.SubElement(price, 'url').text = 'https://m.mia.com/promotion-%s.html'%model.id
+            ET.SubElement(price, 'description').text = model.intro
+            ET.SubElement(price, 'validThrough').text = model.end_time.strftime('%Y-%m-%dT%H:%M:%S')
+            ET.SubElement(price, 'price').text = str(m.active_price)
+            self.eleCount += 1
+            if self.eleCount % 5000 == 0:
+                tree = ET.ElementTree(self.root)
+                tree.write('data/%s-%s.xml'%(self.xmlPrefix, self.checkPoint), 'utf-8', True)
+                self.root = ET.Element('urlset')
+                self.root.set('content_method', 'full')
+        return 1
+
+    def setXmlItemFrame(self, link, title, workId, cdate, uname, cover, text, kword, bname, sku):
+        ele = ET.SubElement(self.root, 'url')
+        ET.SubElement(ele, 'loc').text = link
+        data = ET.SubElement(ele, 'data')
+        disp = ET.SubElement(data, 'display')
+        ET.SubElement(disp, 'workId').text = str(workId)
+        ET.SubElement(disp, 'wapUrl').text = link
+        ET.SubElement(disp, 'headline').text = title
+        ET.SubElement(disp, 'datePublished').text = cdate
+        ET.SubElement(disp, 'dateModified').text = cdate
+        provider = ET.SubElement(disp, 'provider')
+        ET.SubElement(provider, 'brand').text = '蜜芽'
+        author = ET.SubElement(disp, 'author')
+        ET.SubElement(author, 'name').text = uname
+        ET.SubElement(author, 'tag').text = '编辑'
+        ET.SubElement(disp, 'thumbnailUrl').text = cover
+        paragraph = ET.SubElement(disp, 'paragraph')
+        ET.SubElement(paragraph, 'contentType').text = 'text'
+        ET.SubElement(paragraph, 'text').text = text
+        key = ET.SubElement(disp, 'keywords').text = kword
+        prod = ET.SubElement(disp, 'associatedProduct')
+        ET.SubElement(prod, 'brand').text = bname
+        ET.SubElement(prod, 'spu').text = sku
+        ET.SubElement(disp, 'scanCount').text = '0'
+        ET.SubElement(disp, 'thumbupCount').text = '0'
+        ET.SubElement(disp, 'thumbdownCount').text = '0'
+        ET.SubElement(disp, 'commentCount').text = '0'
+        ET.SubElement(disp, 'shareCount').text = '0'
+        ET.SubElement(disp, 'collectCount').text = '0'
+        return prod
+    
+class MlibSample(Editor):
+    def loadData(self):
+        today = datetime.date.today()
+        aSample  = {}
+        bSample = {}
+        stage1 = {}
+        stage2 = {}
+        yday = today - datetime.timedelta(days=1)
+        mid = today - datetime.timedelta(days=15)
+        date = yday - datetime.timedelta(days=30)
+        while True:
+            if date < mid:
+                stage = stage1
+            else:
+                stage = stage2
+            dateStr = date.strftime('%Y%m%d')
+            logging.info('Process %s'%dateStr)
+            path = '/opt/parsed_data/ctr/kblist-%s'%dateStr
+            for line in open(path):
+                li = line.split('\t')
+                pid = int(li[0])
+                click = int(li[1])
+                expose = int(li[2])
+                if pid not in stage:
+                    stage[pid] = [0, 0]
+                stage[pid][0] += click
+                stage[pid][1] += expose
+            if date == yday:
+                break
+            date += datetime.timedelta(days=1)
+
+        count = 0
+        inter = [x for x in stage1 if x in stage2]
+        for i, pid in enumerate(inter):
+            if count % 1000 == 0:
+                logging.info('Processing %s/%s'%(count, len(stage1)))
+                info = {}
+                mdls1 = Koubei.select(Koubei.subject_id, Koubei.score).where(Koubei.subject_id<<inter[i:i+1000])
+                mdls2 = Subject.select(Subject.id, Subject.semantic_analys, Subject.text, Subject.image_url).where(Subject.id<<inter[i:i+1000])
+                for mdl in mdls1:
+                    info[mdl.subject_id] = [mdl.score]
+                for mdl in mdls2:
+                    if mdl.id not in info:
+                        continue
+                    info[mdl.id].append(mdl.semantic_analys)
+                    info[mdl.id].append(mdl.text)
+                    info[mdl.id].append(mdl.image_url)
+            count += 1
+            if pid not in info:
+                continue
+            uscore = info[pid][0]
+            mscore = info[pid][1]
+            if uscore > 0 and uscore < 4:
+                continue
+            if mscore > 0 and mscore < 2:
+                continue
+            text = info[pid][2]
+            textLen = 0
+            for c in text:
+                if ord(c) > 128:
+                    textLen += 1
+            pics = info[pid][3]
+            picNum = 0
+            if pics:
+                picNum = len(pics.split('#'))
+            fpic = round(picNum/float(9), 4)
+            ftext = round(min(textLen/20, 20)/float(20),4)
+            typ = int(bool(stage2[pid][0]))
+            if stage1[pid][0] > 0:#aSample
+                ctr = round(calcCrt(stage1[pid][0], stage1[pid][1]),4)
+                aSample[pid] = [typ, int(bool(picNum)), fpic, ftext, ctr]
+            else:#bSample
+                bSample[pid] = [typ, int(bool(picNum)), fpic, ftext]
+                
+        fp = open('data/asample.txt', 'w')
+        sampleLen = min(len([x for x in aSample if aSample[x][0]==0]), len([x for x in aSample if aSample[x][0]==1]))
+        posCount = 0
+        negCount = 0
+        for pid, flist in aSample.iteritems():
+            if flist[0] == 1:
+                count = posCount
+                posCount += 1
+            else:
+                count = negCount
+                negCount += 1
+            if count < sampleLen:
+                fp.write('%s\t%s\n'%(pid,'\t'.join([str(x) for x in flist])))
+        fp.close()
+
+        sampleLen = min(len([x for x in bSample if bSample[x][0]==0]), len([x for x in bSample if bSample[x][0]==1]))
+        posCount = 0
+        negCount = 0
+        fp = open('data/bsample.txt', 'w')
+        for pid, flist in bSample.iteritems():
+            if flist[0] == 1:
+                count = posCount
+                posCount += 1
+            else:
+                count = negCount
+                negCount += 1
+            if count < sampleLen:
+                fp.write('%s\t%s\n'%(pid,'\t'.join([str(x) for x in flist])))
+        fp.close()
+        return []

@@ -61,6 +61,8 @@ def getOrmModel(dbname, table, columns=[]):
                 _fieldType = 'Float'
             elif _field.data_type == 'bigint':
                 _fieldType = 'BigInteger'
+            elif _field.data_type == 'enum':
+                _fieldType = 'Char'
 
             _index = 'False'
             if _field.column_key == 'PRI':
