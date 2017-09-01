@@ -1819,14 +1819,20 @@ class ClickPos(Editor):
 class MaterialScore(Editor):
     def setCheckPoint(self, post):
         return 0
-    def loadInitData(self):
+    def __init__(self, **kwargs):
         self.postCtr = {}
         self.catgyBucket = {}
         self.brandBucket = {}
         self.skuBucket = {}
         self.userBucket = {}
-        self.redis = RedisUtil()
         self.fp = None
+        Editor.__init__(self, **kwargs)
+        if 'env' in kwargs:
+            self.redis = RedisUtil(kwargs['env'])
+        else:
+            self.redis = RedisUtil()
+            
+    def loadInitData(self):
         path = '/opt/parsed_data/ctr/kblist_acc_ctr'
         if os.path.exists(path):
             for line in open(path):
@@ -1838,6 +1844,8 @@ class MaterialScore(Editor):
 
     def loadData(self):
         if not self.fp:
+            if self.checkPoint==int(datetime.date.today().strftime('%Y%m%d')):
+                return []
             date = datetime.date.today() - datetime.timedelta(days=1)
             path = '/opt/article_in_mia/%s/dump_subject_file_do_not_delete'%date.strftime('%Y%m%d')
             try:
@@ -1923,6 +1931,7 @@ class MaterialScore(Editor):
             self.pushChunks(key, pScore)
         if self.fp:
             self.fp.close()
+            self.checkPoint = int(datetime.date.today().strftime('%Y%m%d'))
 
 class KoubeiScore(Editor):
     strategy = (0, 1)
@@ -2189,6 +2198,7 @@ class NopicSku(Editor):
         fp.close()
 
 from email_util import *
+#口碑排序接口监控
 class KbrankMonitor(Editor):
     def loadData(self):
         msg = ''
@@ -2342,7 +2352,7 @@ class ActiveData(Editor):
         mail = EmailUtil('exmail.qq.com', 'miasearch@mia.com', 'HelloJack123')
         files = [finfo[0] for typ, finfo in self.fpList.items()]
         mail.sendEmail(addr, title, files=files)
-
+#运营数据统计，增加用户分组roleId
 class ActiveData2(ActiveData):
     roleId = 46
     labelId = [28298]
@@ -2356,7 +2366,7 @@ class ActiveData2(ActiveData):
         self.userId = [x.user_id for x in mdls]
     def loadData(self):
         return Subject.select().where((Subject.user_id<<self.userId)&(Subject.id>self.checkPoint)&(Subject.created>self.startDate)).order_by(Subject.id).limit(self.batchSize)
-    
+#为push拉取质量较好的帖子，运营为这些帖子出文案    
 class QualityPost(Editor):
     def loadData(self):
         today = datetime.date.today()
@@ -2421,7 +2431,7 @@ class QualityPost(Editor):
         fpAll.close()
         self.checkPoint = int(today.strftime('%Y%m%d'))
         return []
-
+#帖子push
 class TargetUser(Editor):
     seg = [0,9]
     tmpIdx = 0
@@ -2657,46 +2667,12 @@ class TargetUser(Editor):
         pushInto(self.pushTab, {'user_id':uid, 'content':text, 'url':link})
         self.pushCount += 1
         return 1
-
+#按照seg划分dvcId，并行push
 class TargetUser1(TargetUser): seg = [0,4]
 class TargetUser2(TargetUser): seg = [5,9]
 
-class PushStat(Editor):
-    def loadData(self):
-        pushCtr = {}
-        today = datetime.date.today()
-        yday = today - datetime.timedelta(days=1)
-        mdls = PushLog.select().where((PushLog.created>yday.strftime('%Y-%m-%d'))&(PushLog.created<today.strftime('%Y-%m-%d')))
-        for mdl in mdls:
-            if mdl.pid not in pushCtr:
-                #expose ios, android, click ios, android, ctr ios, android, total ctr
-                pushCtr[mdl.pid] = [0, 0, 0, 0, 0, 0, 0, mdl.content]
-            if mdl.dvcid.find('-') > 0:
-                pushCtr[mdl.pid][0] += 1
-            else:
-                pushCtr[mdl.pid][1] += 1
-        path = '/opt/parsed_data/personalized_post/%s/push_clicked_format.txt'%yday.strftime('%Y%m%d')
-        for line in open(path):
-            li = line.split('\t')
-            dvcId = li[1]
-            pid = int(li[2])
-            if pid not in pushCtr:
-                pushCtr[pid] = [0, 0, 0, 0, 0, 0, 0, '']
-            if dvcId.find('-') > 0:
-                pushCtr[pid][2] += 1
-            else:
-                pushCtr[pid][3] += 1
-
-        fp = open('data/pushstat-%s.csv'%yday.strftime('%Y%m%d'),'w')
-        for pid, stat in pushCtr.iteritems():
-            stat[4] = calcCrt(stat[2], stat[0])
-            stat[5] = calcCrt(stat[3], stat[1])
-            stat[6] = calcCrt(stat[2]+stat[3], stat[0]+stat[1])
-            ctn = '%s,%s\n'%(pid, ','.join(map(str, stat[:7])))
-            fp.write(ctn)
-        fp.close()
-        return []
 import zlib
+#口碑列表排序优化abtest对比数据
 class Abtest(Editor):
     def loadData(self):
         today = datetime.date.today()
@@ -2733,7 +2709,7 @@ class Abtest(Editor):
                 break
             date += datetime.timedelta(days=1)
         return []
-
+#统计口碑数最多的2000个sku
 class TopStat(Editor):
     def loadData(self):
         fp = open('data/topkoubeisku.csv', 'w')
@@ -2753,6 +2729,7 @@ class TopStat(Editor):
             fp.write('%s, %s, %s, %s\n'%(mdl.item_id, name, catgy, mdl.kbcount))
         fp.close()
         return []
+#统计给定分类下的sku的口碑数
 class TopStat2(Editor):
     def loadData(self):
         #level1Catgy = [10011,15512,10006,10017,15511,15509]
@@ -2777,6 +2754,7 @@ class TopStat2(Editor):
             fp.write('%s, %s, %s\n'%(skuId, stat[0], stat[1]))
         fp.close()
         return []
+#按省统计发帖量
 class TopStat3(Editor):
     batchSize = 10000
     userDict = {}
@@ -2805,7 +2783,8 @@ class TopStat3(Editor):
         for provid, stat in ranked:
             fp.write('%s, %s, %s\n'%(provid, stat[0], stat[1]))
         fp.close()
-                
+        
+#根据uid提取收货信息                
 class UserAddr(Editor):
     def loadData(self):
         fp = open('data/useraddr.csv', 'w')
@@ -2828,6 +2807,7 @@ class UserAddr(Editor):
         return []
 
 from picview import *
+#计算图片明亮度和清晰度
 class PicView(Editor):
     def loadData(self):
         path = '/opt/parsed_data/text_features_4_index/index_terms_input.txt'
@@ -2871,25 +2851,14 @@ class PicView(Editor):
         fp.close()
         self.checkPoint = int(today.strftime('%Y%m%d'))
         return []
-
+    
+#一级分类下蜜芽圈帖子数量统计
 class GroupSku(Editor):
     batchSize = 1000
     clickInfo = {}
     catgyStat = {}
     def loadInitData(self):
         self.checkPoint = 0
-#        today = datetime.date.today()
-#        for day in range(1,31):
-#            date = today - datetime.timedelta(days=day)
-#            path = 'data/click-%s/part-00000'%date.strftime('%Y%m%d')
-#            for line in open(path):
-#                idx = line.find("',")
-#                li = line[3:idx].split('_')
-#                num = line[idx+2:-2]
-#                pid = int(li[0])
-#                if pid not in self.clickInfo:
-#                    self.clickInfo[pid] = 0
-#                self.clickInfo[int(pid)] += 1
     def loadData(self):
         return Subject.select().where((Subject.id>self.checkPoint)&(Subject.status==1)&(Subject.source==1)&(Subject.created>'20170401')&(Subject.created<'20170801')).order_by(Subject.id).limit(self.batchSize)
     def edit(self, model):
@@ -2911,8 +2880,6 @@ class GroupSku(Editor):
         picNum = len(model.image_url.split('#'))
         if textLen>99 and picNum>2:
             self.catgyStat[mdl4.name][1] += 1
-#        if model.id in self.clickInfo:
-#            self.catgyStat[mdl4.name][2] += self.clickInfo[model.id]
         return 1
     def finish(self):
         path = 'data/group-catgy-stat.csv'
@@ -2926,6 +2893,7 @@ class GroupSku(Editor):
         mail.sendEmail(addr, title, files=[path])
 
 import xml.etree.ElementTree as ET
+#百度合作商品文章生成上传
 class Dump4Baidu(Editor):
     xmlPrefix = 'xml4baidu'
     def loadInitData(self):
@@ -3062,7 +3030,7 @@ class Dump4Baidu(Editor):
             logging.info('Sitemap for baidu succ.')
         else:
             logging.info('Sitemap for baidu fail.')
-
+#百度合作商品优惠生成上传
 class Prom4Baidu(Dump4Baidu):
     xmlPrefix = 'prom4baidu'
     def loadInitData(self):
@@ -3137,7 +3105,8 @@ class Prom4Baidu(Dump4Baidu):
         ET.SubElement(disp, 'shareCount').text = '0'
         ET.SubElement(disp, 'collectCount').text = '0'
         return prod
-    
+
+#lr机器学习样本生成
 class MlibSample(Editor):
     def loadData(self):
         today = datetime.date.today()
