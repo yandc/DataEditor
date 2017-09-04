@@ -2230,16 +2230,16 @@ class KbrankMonitor(Editor):
         return []
 #活动结束用户数据统计
 class ActiveData(Editor):
-    labelId = [31129]
-    exclude = [28298, 23850, 29410]
-    source = (2,)
+    labelId = [29410]
+    exclude = [28298, 23850]
+    source = (1,)
     status = (1,)
-    output = (0,1)
+    output = (2,)
     titPic = False
     subItem = False
     labelNum = 0
-    startDate = '20170825'
-    endDate = '20170827'
+    startDate = '20170801'
+    endDate = '20170831'
     countLimit = 0
     info = {}
     detail = {}
